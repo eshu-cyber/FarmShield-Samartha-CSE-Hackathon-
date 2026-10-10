@@ -1,0 +1,28 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Generated backend artifacts
+backend/artifacts/
+backend/data/crop_recommendation_cleaned.csv
+backend/data/cleaning_report.json
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
+# Editor and operating-system files
+**/.git/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
