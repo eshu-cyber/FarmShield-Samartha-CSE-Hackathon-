@@ -276,8 +276,13 @@ export const markets = [
 
 export const priceHistoryFactors = [0.91, 0.93, 0.92, 0.95, 0.94, 0.97, 0.96, 1.02, 0.99, 1.04, 1.02, 1];
 
+function currentIntlLocale(): string {
+  const language = document.documentElement.lang;
+  return language === "te" ? "te-IN" : language === "hi" ? "hi-IN" : "en-IN";
+}
+
 export function formatRupees(value: number): string {
-  return new Intl.NumberFormat("en-IN", {
+  return new Intl.NumberFormat(currentIntlLocale(), {
     style: "currency",
     currency: "INR",
     maximumFractionDigits: 0,
@@ -285,7 +290,7 @@ export function formatRupees(value: number): string {
 }
 
 export function formatStorageRate(value: number): string {
-  return new Intl.NumberFormat("en-IN", {
+  return new Intl.NumberFormat(currentIntlLocale(), {
     style: "currency",
     currency: "INR",
     maximumFractionDigits: 2,

@@ -1,6 +1,6 @@
 # FarmShield local API
 
-The API serves the crop recommendation model, a cleaned preview of the supplied crop dataset, and a notebook-derived crop-calendar demonstration. It does not run DSSAT: the project does not include the DSSAT executable, cultivar coefficients, validated soil/weather files, or crop-specific management inputs.
+The API serves the crop recommendation model, aggregate insights from the cleaned crop dataset, and a notebook-derived crop-calendar demonstration. It does not expose individual dataset rows. It does not run DSSAT: the project does not include the DSSAT executable, cultivar coefficients, validated soil/weather files, or crop-specific management inputs.
 
 ## Setup
 
@@ -26,6 +26,8 @@ The Vite development server proxies `/api` to the local backend. Set `VITE_API_B
 ## Data and model limits
 
 The supplied crop file has 2,200 rows and 22 crop labels. The project contains no publisher, license, collection-method, geographic-coverage, or measurement-unit metadata for it, so the underlying observations cannot be independently verified as real. The trained model is a genuine classifier fit to that supplied file, but its high held-out score only describes this dataset split and is not evidence of field accuracy.
+
+The frontend displays aggregate counts, crop categories, data-source caveats, and held-out model metrics calculated from the supplied dataset. The API summary returns only these aggregate fields; it does not return the cleaned records or individual feature values. The raw-row preview endpoint is intentionally not provided.
 
 The connected `/api/predict/calendar` endpoint applies the notebook's GDD threshold demonstration to historical daily weather from Open-Meteo. It accepts latitude, longitude, start/end dates, and optional base-temperature and maturity-GDD thresholds. Weather is historical gridded data, not a farm sensor reading or a forecast; the browser sends the coordinates and dates to the local API, which requests them from Open-Meteo.
 

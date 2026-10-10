@@ -57,6 +57,7 @@ import {
   type View,
 } from "./data";
 import StorageProviderPage from "./StorageProvider";
+import { getIntlLocale, getLanguage, languageNames, translate, useLocalization, type Language } from "./i18n";
 
 const navigation: { label: View; icon: typeof House }[] = [
   { label: "Overview", icon: House },
@@ -113,13 +114,6 @@ type DatasetSummary = {
   missing_values_after_cleaning: Record<string, number>;
   processed_at_utc: string;
   date_range: string | null;
-};
-
-type DatasetPreview = {
-  offset: number;
-  limit: number;
-  total: number;
-  records: Record<string, unknown>[];
 };
 
 type CropModelMetrics = {
@@ -361,15 +355,6 @@ function isDatasetSummary(value: unknown): value is DatasetSummary {
     (typeof value.date_range === "string" || value.date_range === null);
 }
 
-function isDatasetPreview(value: unknown): value is DatasetPreview {
-  return isRecord(value) &&
-    typeof value.offset === "number" &&
-    typeof value.limit === "number" &&
-    typeof value.total === "number" &&
-    Array.isArray(value.records) &&
-    value.records.every(isRecord);
-}
-
 function isModelMetrics(value: unknown): value is { crop_recommendation: CropModelMetrics } {
   if (!isRecord(value) || !isRecord(value.crop_recommendation)) return false;
   const model = value.crop_recommendation;
@@ -405,7 +390,19 @@ function dateLabel(date: string, options?: Intl.DateTimeFormatOptions): string {
   if (!date) return "Not set";
   const parsed = new Date(`${date}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime())) return "Not set";
-  return parsed.toLocaleDateString("en-IN", { ...options, timeZone: "UTC", ...(options ? {} : { day: "numeric", month: "short", year: "numeric" }) });
+  return parsed.toLocaleDateString(getIntlLocale(), { ...options, timeZone: "UTC", ...(options ? {} : { day: "numeric", month: "short", year: "numeric" }) });
+}
+
+function LanguageSelect({ language, onChange }: { language: Language; onChange: (language: Language) => void }) {
+  return (
+    <label className="language-select">
+      <GlobeHemisphereWest size={18} aria-hidden="true" />
+      <span className="visually-hidden">Language</span>
+      <select value={language} onChange={(event) => onChange(event.target.value as Language)} aria-label="Language">
+        {(Object.keys(languageNames) as Language[]).map((code) => <option key={code} value={code}>{languageNames[code]}</option>)}
+      </select>
+    </label>
+  );
 }
 
 function Field({
@@ -458,6 +455,16 @@ function SampleTag({ children = "Demo data" }: { children?: React.ReactNode }) {
 }
 
 function App() {
+  const [language, setLanguage] = useState<Language>(getLanguage);
+  const changeLanguage = (value: Language) => {
+    setLanguage(value);
+    try {
+      localStorage.setItem("farmshield-language", value);
+    } catch (error) {
+      console.error("Could not save FarmShield language preference.", error);
+    }
+  };
+  useLocalization(language);
   const [state, setState] = useState<DemoState>(() => {
     const restored = loadDemoState();
     const normalized = { ...restored };
@@ -475,6 +482,14 @@ function App() {
     return normalized;
   });
   const [dashboardMode, setDashboardMode] = useState<"selection" | "farmer" | "provider">("selection");
+  useEffect(() => {
+    const title = dashboardMode === "selection"
+      ? "Choose a workspace"
+      : dashboardMode === "provider"
+        ? "Storage Provider Dashboard"
+        : state.view;
+    document.title = `FarmShield | ${translate(title, language)}`;
+  }, [dashboardMode, language, state.view]);
   const [toast, setToast] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -490,7 +505,6 @@ function App() {
   const [facilityCondition, setFacilityCondition] = useState("All conditions");
   const [facilityMonitoring, setFacilityMonitoring] = useState("Any monitoring");
   const [facilityLocation, setFacilityLocation] = useState("");
-  const [language, setLanguage] = useState("English");
   const [menuFacility, setMenuFacility] = useState<Facility | null>(null);
   const modalRef = useRef<HTMLElement>(null);
   const modalTriggerRef = useRef<HTMLElement | null>(null);
@@ -916,13 +930,13 @@ function App() {
           />
         );
       case "My farm":
-        return <FarmPage crop={crop} area={state.soilForm.area} unit={state.soilForm.areaUnit} form={state.soilForm} onNavigate={navigate} />;
+        return <FarmPage crop={crop} area={state.soilForm.area} unit={state.soilForm.areaUnit} form={state.soilForm} language={language} onNavigate={navigate} />;
       case "Settings":
         return (
           <SettingsPage
             language={language}
             dark={state.dark}
-            onLanguage={setLanguage}
+            onLanguage={changeLanguage}
             onDark={(value) => update({ dark: value })}
             onReset={resetDemo}
           />
@@ -946,7 +960,7 @@ function App() {
   };
 
   if (dashboardMode === "selection") {
-    return <RoleSelection onSelect={selectWorkspace} />;
+    return <RoleSelection onSelect={selectWorkspace} language={language} onLanguage={changeLanguage} />;
   }
 
   return (
@@ -1035,8 +1049,8 @@ function App() {
             <div className="breadcrumb"><span>{dashboardMode === "farmer" ? "Farm workspace" : "Storage workspace"}</span><CaretRight size={14} /><strong>{dashboardMode === "farmer" ? state.view : "Facilities"}</strong></div>
           </div>
           <div className="topbar-actions">
-            {dashboardMode === "farmer" && <button className="location-chip" onClick={() => navigate("Soil & crop recommendations")} aria-label={`Update location. Current district: ${state.soilForm.district || "not set"}`}><MapPin size={15} /><span>{state.soilForm.district || "Set location"}</span><CaretDown size={13} /></button>}
-            <label className="language-select"><GlobeHemisphereWest size={16} /><select value={language} onChange={(event) => setLanguage(event.target.value)} aria-label="Language"><option>English</option><option>తెలుగు (coming soon)</option><option>हिंदी (coming soon)</option></select></label>
+            {dashboardMode === "farmer" && <button className="location-chip" onClick={() => navigate("Soil & crop recommendations")} aria-label={`${translate("Update location. Current district:", language)} ${translate(state.soilForm.district || "not set", language)}`}><MapPin size={15} /><span>{state.soilForm.district || "Set location"}</span><CaretDown size={13} /></button>}
+            <LanguageSelect language={language} onChange={changeLanguage} />
             {dashboardMode === "farmer" && <div className="popover-anchor">
               <button className="icon-button notification-button" onClick={() => { setNotificationsOpen((value) => !value); setProfileOpen(false); }} aria-label="Notifications" aria-expanded={notificationsOpen}>
                 <Bell size={19} />{!state.notificationRead && <span className="notification-indicator" />}
@@ -1063,10 +1077,6 @@ function App() {
               <p className="heading-description">{dashboardMode === "provider" ? "Manage facility details and simulated monitoring in one shared demo." : state.view === "Overview" ? "A clear view of your farm plan, from soil to harvest." : pageDescription(state.view)}</p>
             </div>
             <div className="dashboard-heading-actions">
-              <div className="dashboard-switcher" role="group" aria-label="Choose dashboard">
-                <button className={dashboardMode === "farmer" ? "active" : ""} aria-pressed={dashboardMode === "farmer"} onClick={() => selectWorkspace("farmer")}>Farmer Dashboard</button>
-                <button className={dashboardMode === "provider" ? "active" : ""} aria-pressed={dashboardMode === "provider"} onClick={() => selectWorkspace("provider")}>Storage Provider</button>
-              </div>
               <button className="button-quiet role-switch-button" onClick={showRoleSelection}>Switch role</button>
             </div>
           </div>
@@ -1122,7 +1132,7 @@ function App() {
             <div className="modal-heading"><div><span className="modal-icon"><Warehouse size={21} /></span><SampleTag>{menuFacility.providerManaged ? "Provider demo" : "Seed sample"}</SampleTag></div><button className="icon-button" onClick={() => setMenuFacility(null)} aria-label="Close facility details"><X size={19} /></button></div>
             <h2 id="facility-title">{menuFacility.name}</h2>
             <p id="facility-description">{menuFacility.description}</p>
-            <div className="detail-grid"><div><small>Location</small><strong>{menuFacility.address ? `${menuFacility.address}, ` : ""}{menuFacility.locality}, {menuFacility.sampleDistrict}, {menuFacility.state}, {menuFacility.country}</strong></div><div><small>Storage type</small><strong>{menuFacility.type}</strong></div><div><small>Condition / provider reported</small><strong>{menuFacility.condition}</strong></div><div><small>Availability</small><strong>{menuFacility.availability}</strong></div><div><small>Available capacity</small><strong>{Math.max(0, menuFacility.capacity - menuFacility.occupiedCapacity)} / {menuFacility.capacity} {menuFacility.capacityUnit}</strong></div><div><small>Sample daily price</small><strong>{formatStorageRate(menuFacility.dailyPrice)} / {menuFacility.pricingUnit}</strong></div><div><small>Minimum storage duration</small><strong>{menuFacility.minimumDays} days</strong></div><div><small>Handling and loading fees</small><strong>{formatRupees(menuFacility.handlingFee + menuFacility.loadingFee)}</strong></div><div><small>Cleanliness</small><strong>{menuFacility.cleanliness}</strong></div><div><small>Ventilation</small><strong>{menuFacility.ventilation}</strong></div><div><small>Moisture protection</small><strong>{menuFacility.moistureProtection}</strong></div><div><small>Pest-control status</small><strong>{menuFacility.pestControl}</strong></div><div><small>Last inspection date</small><strong>{menuFacility.inspectionDate || "Not entered"}</strong></div><div><small>Maintenance notes</small><strong>{menuFacility.maintenanceNotes || "None entered"}</strong></div></div>
+            <div className="detail-grid"><div><small>Location</small><strong>{menuFacility.address ? `${menuFacility.address}, ` : ""}{menuFacility.locality}, {menuFacility.sampleDistrict}, {menuFacility.state}, {menuFacility.country}</strong></div><div><small>Storage type</small><strong>{menuFacility.type}</strong></div><div><small>Condition / provider reported</small><strong>{menuFacility.condition}</strong></div><div><small>Availability</small><strong>{menuFacility.availability}</strong></div><div><small>Available capacity</small><strong>{Math.max(0, menuFacility.capacity - menuFacility.occupiedCapacity)} / {menuFacility.capacity} {menuFacility.capacityUnit}</strong></div><div><small>Sample daily price</small><strong>{formatStorageRate(menuFacility.dailyPrice)} / {menuFacility.pricingUnit}</strong></div><div><small>Minimum storage duration</small><strong>{translate(`${menuFacility.minimumDays} days`, language)}</strong></div><div><small>Handling and loading fees</small><strong>{formatRupees(menuFacility.handlingFee + menuFacility.loadingFee)}</strong></div><div><small>Cleanliness</small><strong>{menuFacility.cleanliness}</strong></div><div><small>Ventilation</small><strong>{menuFacility.ventilation}</strong></div><div><small>Moisture protection</small><strong>{menuFacility.moistureProtection}</strong></div><div><small>Pest-control status</small><strong>{menuFacility.pestControl}</strong></div><div><small>Last inspection date</small><strong>{menuFacility.inspectionDate ? dateLabel(menuFacility.inspectionDate) : "Not entered"}</strong></div><div><small>Maintenance notes</small><strong>{menuFacility.maintenanceNotes || "None entered"}</strong></div></div>
             <div className="facility-fit"><strong>Suitable crops</strong><div>{menuFacility.crops.map((item) => <span key={item}>{item}</span>)}</div></div>
             <div className="facility-fit"><strong>Environmental monitoring</strong><div>{menuFacility.devices.length ? menuFacility.devices.map((device) => <span key={device.id}>{device.name} ({device.type}): {device.status}, {device.enabled ? "enabled" : "disabled"}{device.temperature !== null ? `, ${device.temperature} °C` : ""}{device.humidity !== null ? `, ${device.humidity}% RH` : ""}. {device.updatedAt}</span>) : <span>No simulated devices configured</span>}</div><small>Simulated IoT Data - No Live Device Connected</small></div>
             {state.reserved && state.selectedFacility === menuFacility.id && <div className="inline-success"><CheckCircle size={18} />Demo confirmation saved. This is not a real reservation.</div>}
@@ -1346,13 +1356,10 @@ function SoilPage({
 }
 
 function DataInsights() {
-  const [offset, setOffset] = useState(0);
   const [summary, setSummary] = useState<DatasetSummary | null>(null);
-  const [preview, setPreview] = useState<DatasetPreview | null>(null);
   const [metrics, setMetrics] = useState<CropModelMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const pageSize = 8;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1360,14 +1367,12 @@ function DataInsights() {
       setLoading(true);
       setError("");
       try {
-        const [nextSummary, nextPreview, metricResponse] = await Promise.all([
+        const [nextSummary, metricResponse] = await Promise.all([
           requestApi("/data/summary", isDatasetSummary, controller.signal),
-          requestApi(`/data/preview?offset=${offset}&limit=${pageSize}`, isDatasetPreview, controller.signal),
           requestApi("/models/metrics", isModelMetrics, controller.signal),
         ]);
         if (controller.signal.aborted) return;
         setSummary(nextSummary);
-        setPreview(nextPreview);
         setMetrics(metricResponse.crop_recommendation);
       } catch (loadError) {
         if (controller.signal.aborted) return;
@@ -1378,7 +1383,7 @@ function DataInsights() {
     }
     void loadInsights();
     return () => controller.abort();
-  }, [offset]);
+  }, []);
 
   const missingCount = summary
     ? Object.values(summary.missing_values_after_cleaning).reduce(
@@ -1386,15 +1391,13 @@ function DataInsights() {
       0,
     )
     : 0;
-  const columns = ["crop", "N", "P", "K", "temperature", "humidity", "ph", "rainfall"];
-
   return (
     <section className="panel data-insights" aria-labelledby="data-insights-title">
       <div className="section-title-row">
-        <div><h3 id="data-insights-title">Crop dataset insights</h3><p>Historical training observations, separate from model predictions.</p></div>
+        <div><h3 id="data-insights-title">Crop dataset insights</h3><p>Dataset-derived summary and model evaluation; individual dataset rows are not displayed.</p></div>
         <span className="sample-tag"><Database size={13} weight="bold" />Local dataset</span>
       </div>
-      {loading && !summary && <p className="data-insights-status" role="status">Loading the cleaned dataset summary…</p>}
+      {loading && !summary && <p className="data-insights-status" role="status">Loading dataset summary…</p>}
       {error && <div className="form-error" role="alert"><Warning size={16} />Dataset insights unavailable: {error}</div>}
       {summary && (
         <>
@@ -1418,28 +1421,7 @@ function DataInsights() {
             <span><strong>Processed</strong> {new Date(summary.processed_at_utc).toLocaleString()}</span>
             <p>{summary.source_provenance}</p>
           </div>
-          {preview && preview.records.length > 0 ? (
-            <>
-              <div className="comparison-table-wrap dataset-table-wrap">
-                <table>
-                  <caption>Cleaned source rows — not predictions</caption>
-                  <thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
-                  <tbody>{preview.records.map((record, index) => (
-                    <tr key={`${preview.offset}-${index}`}>
-                      {columns.map((column) => <td key={column}>{String(record[column] ?? "—")}</td>)}
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>
-              <div className="data-pagination">
-                <span>Showing {preview.offset + 1}–{Math.min(preview.offset + preview.records.length, preview.total)} of {preview.total.toLocaleString("en-IN")} rows</span>
-                <div>
-                  <button type="button" className="button-secondary" disabled={offset === 0 || loading} onClick={() => setOffset((value) => Math.max(0, value - pageSize))}>Previous</button>
-                  <button type="button" className="button-secondary" disabled={offset + pageSize >= preview.total || loading} onClick={() => setOffset((value) => value + pageSize)}>Next</button>
-                </div>
-              </div>
-            </>
-          ) : !loading && !error ? <p className="data-insights-status">No cleaned records are available.</p> : null}
+          <p className="data-insights-status">{translate("Original row-level data is not provided by this page or its API.", getLanguage())}</p>
           <p className="dataset-category-note"><strong>Crop categories in source:</strong> {summary.crop_categories.join(", ")}</p>
         </>
       )}
@@ -1713,13 +1695,13 @@ function MarketPage({
           </div>
         </section>
         <section className="panel price-chart-panel">
-          <div className="section-title-row"><div><h3>Sample market snapshot</h3><p>{crop?.name ?? "Rice"} at {markets[selectedMarket].name}. Price per quintal.</p></div><SampleTag>Not live</SampleTag></div>
-          <div className="price-main"><div><strong>{formatRupees(basePrice)}</strong><span>per quintal</span></div><span className="change-badge">{markets[selectedMarket].change} sample change</span></div>
+          <div className="section-title-row"><div><h3>Sample market snapshot</h3><p>{translate(`${crop?.name ?? "Rice"} at ${markets[selectedMarket].name}. Price per quintal.`, getLanguage())}</p></div><SampleTag>Not live</SampleTag></div>
+          <div className="price-main"><div><strong>{formatRupees(basePrice)}</strong><span>per quintal</span></div><span className="change-badge">{translate(`${markets[selectedMarket].change} sample change`, getLanguage())}</span></div>
           <div className="chart-area">
             <div className="chart-y-labels">{yAxisValues.map((value) => <span key={value}>{formatRupees(value)}</span>)}</div>
             <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-labelledby="chart-title chart-description">
-              <title id="chart-title">Illustrative 12-week sample price history</title>
-              <desc id="chart-description">Prices are shown in rupees per quintal for {crop?.name ?? "Rice"} at {markets[selectedMarket].name}. All values are sample data, not live rates.</desc>
+              <title id="chart-title">{translate("Illustrative 12-week sample price history", getLanguage())}</title>
+              <desc id="chart-description">{translate(`Prices are shown in rupees per quintal for ${crop?.name ?? "Rice"} at ${markets[selectedMarket].name}. All values are sample data, not live rates.`, getLanguage())}</desc>
               <defs><linearGradient id="chartFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="var(--green)" stopOpacity=".18" /><stop offset="100%" stopColor="var(--green)" stopOpacity="0" /></linearGradient></defs>
               <path d={chartAreaPath} fill="url(#chartFill)" />
               <path d={chartPath} fill="none" stroke="var(--green)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
@@ -1728,7 +1710,7 @@ function MarketPage({
           </div>
           <div className="market-mini-list">{markets.map((market, index) => <button key={market.name} className={selectedMarket === index ? "selected" : ""} onClick={() => onMarket(index)}><span>{market.name}</span><strong>{formatRupees(Math.round((crop?.pricePerQuintal ?? 2280) * market.priceFactor))}</strong><em className={market.change.startsWith("-") ? "negative-change" : ""}>{market.change}</em></button>)}</div>
           <button className="text-link chart-expand" aria-expanded={compareOpen} onClick={() => setCompareOpen((value) => !value)}>{compareOpen ? "Hide sample history values" : "View sample history values"}<ArrowRight size={14} /></button>
-          {compareOpen && <div className="expanded-market-note"><strong>Weekly sample values per quintal</strong><p>Illustrative history for {crop?.name ?? "Rice"} at {markets[selectedMarket].name}. Confirm current rates with a verified market source.</p><div className="price-history-list">{weeklyPrices.map((price, index) => <span key={`${index}-${price}`}>Week {index + 1}<strong>{formatRupees(price)}</strong></span>)}</div></div>}
+          {compareOpen && <div className="expanded-market-note"><strong>Weekly sample values per quintal</strong><p>{translate(`Illustrative history for ${crop?.name ?? "Rice"} at ${markets[selectedMarket].name}. Confirm current rates with a verified market source.`, getLanguage())}</p><div className="price-history-list">{weeklyPrices.map((price, index) => <span key={`${index}-${price}`}>{translate(`Week ${index + 1}`, getLanguage())}<strong>{formatRupees(price)}</strong></span>)}</div></div>}
         </section>
       </div>
       <div className="sell-store-heading"><div><p className="eyebrow">DECISION SUPPORT</p><h2>Compare the two sample scenarios</h2><p>Change quantities and assumptions to see the estimated returns update.</p></div><SampleTag>Illustrative math</SampleTag></div>
@@ -1736,7 +1718,7 @@ function MarketPage({
         <section className="decision-card sell-card">
           <div className="decision-card-head"><span className="decision-icon"><ArrowUpRight size={19} /></span><span className="scenario-label">OPTION A</span><SampleTag>Sell now</SampleTag></div>
           <h3>Sell your harvest now</h3><p>Estimates use the selected market's sample price and your entered harvest quantity.</p>
-          <div className="calculation-list"><div><span>Quantity to sell</span><strong>{quantity} {unit} ({sellQuintals.toFixed(2)} quintals)</strong></div><div><span>Illustrative price / quintal</span><strong>{formatRupees(basePrice)}</strong></div><div><span>Estimated gross revenue</span><strong>{formatRupees(sellGross)}</strong></div><div><span>Selling and handling</span><strong>- {formatRupees(sellCost)}</strong></div><div><span>Transport</span><strong>- {formatRupees(transportCost)}</strong></div></div>
+          <div className="calculation-list"><div><span>Quantity to sell</span><strong>{translate(`${quantity} ${unit} (${sellQuintals.toFixed(2)} quintals)`, getLanguage())}</strong></div><div><span>Illustrative price / quintal</span><strong>{formatRupees(basePrice)}</strong></div><div><span>Estimated gross revenue</span><strong>{formatRupees(sellGross)}</strong></div><div><span>Selling and handling</span><strong>- {formatRupees(sellCost)}</strong></div><div><span>Transport</span><strong>- {formatRupees(transportCost)}</strong></div></div>
           <div className="net-total"><span>Estimated net return</span><strong>{formatRupees(sellNet)}</strong></div>
           <button className="button-primary full-button" onClick={onSell}>Review sell-now demo <ArrowRight size={16} /></button>
           <small className="card-disclaimer">No market order or sale will be placed.</small>
@@ -1749,10 +1731,10 @@ function MarketPage({
             <Field label="Assumed quantity loss (%)"><input type="number" min="0" max="100" step="0.5" value={storageLoss} onChange={(event) => onUpdate({ storageLoss: Math.min(100, Math.max(0, Number(event.target.value))) })} /></Field>
             <Field label="Storage and handling (₹)"><input type="number" min="0" step="50" value={storageCost} onChange={(event) => onUpdate({ storageCost: Math.max(0, Number(event.target.value)) })} /></Field>
           </div>
-          <div className="storage-assumptions"><span>Saleable quantity</span><strong>{saleableQuantity.toFixed(1)} {unit}</strong><small>{saleableQuintals.toFixed(2)} quintals after {storageLoss}% assumed storage loss</small></div>
+          <div className="storage-assumptions"><span>Saleable quantity</span><strong>{translate(`${saleableQuantity.toFixed(1)} ${unit}`, getLanguage())}</strong><small>{translate(`${saleableQuintals.toFixed(2)} quintals after ${storageLoss}% assumed storage loss`, getLanguage())}</small></div>
           <div className="calculation-list compact"><div><span>Assumed future price / quintal</span><strong>{formatRupees(futurePrice)}</strong></div><div><span>Illustrative gross revenue</span><strong>{formatRupees(saleableQuintals * futurePrice)}</strong></div><div><span>Storage + transport costs</span><strong>- {formatRupees(storageCost + transportCost)}</strong></div></div>
           <div className="net-total"><span>Estimated later net return</span><strong>{formatRupees(storeNet)}</strong></div>
-          <div className={`scenario-difference${storeDelta < 0 ? " lower" : ""}`}>{storeDelta >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />} {formatRupees(Math.abs(storeDelta))} {storeDelta >= 0 ? "above" : "below"} the sell-now estimate under these assumptions</div>
+          <div className={`scenario-difference${storeDelta < 0 ? " lower" : ""}`}>{storeDelta >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />} {translate(`${formatRupees(Math.abs(storeDelta))} ${storeDelta >= 0 ? "above" : "below"} the sell-now estimate under these assumptions`, getLanguage())}</div>
           <button className="button-secondary full-button" onClick={onStore}>Browse sample storage <ArrowRight size={16} /></button>
           <small className="card-disclaimer">A higher assumed future price does not guarantee a better return.</small>
         </section>
@@ -1836,7 +1818,7 @@ function StoragePage({
           <button className="button-quiet" onClick={() => { onLocationFilter(""); onType("All types"); onCost(10); onDistance(50); onCondition("All conditions"); onMonitoring("Any monitoring"); }}>Reset filters</button>
         </aside>
         <section className="storage-results">
-          <div className="storage-results-head"><span>{entries.length} sample facilities</span><span>{location.trim().toLowerCase() === "guntur" ? "Example distances for Guntur" : "Sample-list order, no matching distances"}</span></div>
+          <div className="storage-results-head"><span>{translate(`${entries.length} sample facilities`, getLanguage())}</span><span>{location.trim().toLowerCase() === "guntur" ? "Example distances for Guntur" : "Sample-list order, no matching distances"}</span></div>
           {entries.length ? entries.map((facility) => (
             <article className="panel facility-row" key={facility.id}>
               <div className="facility-symbol"><Warehouse size={22} /></div>
@@ -1870,12 +1852,14 @@ function FarmPage({
   area,
   unit,
   form,
+  language,
   onNavigate,
 }: {
   crop: CropInfo | null;
   area: string;
   unit: string;
   form: SoilForm;
+  language: Language;
   onNavigate: (view: View) => void;
 }) {
   function downloadSummary() {
@@ -1908,7 +1892,7 @@ function FarmPage({
       <div className="callout demo-callout"><span><Database size={18} /></span><p>This farm profile is a local demo. It is saved in this browser only. Do not enter information you do not want stored on this device.</p></div>
       <div className="farm-page-grid">
         <section className="panel farm-profile-panel">
-          <div className="farm-profile-cover" role="img" aria-label="Sample cultivated farm landscape" />
+          <div className="farm-profile-cover" role="img" aria-label={translate("Sample cultivated farm landscape", language)} />
           <div className="farm-person-row"><div className="farm-profile-avatar">RK</div><div><h2>Ramesh Kumar</h2><p>Demo farmer profile</p></div><SampleTag /></div>
           <div className="farm-details-list">{rows.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
           <div className="farm-panel-actions"><button className="button-primary" onClick={() => onNavigate("Soil & crop recommendations")}><Plus size={16} />Update farm details</button><button className="button-secondary" onClick={downloadSummary}><DownloadSimple size={16} />Download demo summary</button></div>
@@ -1930,9 +1914,9 @@ function SettingsPage({
   onDark,
   onReset,
 }: {
-  language: string;
+  language: Language;
   dark: boolean;
-  onLanguage: (language: string) => void;
+  onLanguage: (language: Language) => void;
   onDark: (dark: boolean) => void;
   onReset: () => void;
 }) {
@@ -1940,7 +1924,7 @@ function SettingsPage({
     <div className="settings-layout">
       <section className="panel settings-main">
         <div className="section-title-row"><div><h3>Display preferences</h3><p>Settings are saved in this browser.</p></div><span className="section-icon"><ClipboardText size={20} /></span></div>
-        <div className="setting-row"><div className="setting-icon"><GlobeHemisphereWest size={19} /></div><div className="setting-copy"><strong>Language</strong><small>English is active. Additional languages are planned.</small></div><select value={language} onChange={(event) => onLanguage(event.target.value)}><option>English</option><option>తెలుగు (coming soon)</option><option>हिंदी (coming soon)</option></select></div>
+        <div className="setting-row"><div className="setting-icon"><GlobeHemisphereWest size={19} /></div><div className="setting-copy"><strong>Language</strong><small>Choose a language for all pages.</small></div><LanguageSelect language={language} onChange={onLanguage} /></div>
         <div className="setting-row"><div className="setting-icon">{dark ? <Moon size={19} /> : <Sun size={19} />}</div><div className="setting-copy"><strong>Appearance</strong><small>Switch between light and dark display.</small></div><button className={`theme-switch${dark ? " on" : ""}`} role="switch" aria-checked={dark} onClick={() => onDark(!dark)}><span />{dark ? "Dark" : "Light"}</button></div>
         <div className="setting-row"><div className="setting-icon"><Bell size={19} /></div><div className="setting-copy"><strong>Sample notifications</strong><small>Weather and crop reminders are simulated, not live.</small></div><span className="setting-status">Demo only</span></div>
       </section>
@@ -1954,7 +1938,7 @@ function EmptyPanel({ title, description, action, onAction }: { title: string; d
   return <section className="panel empty-panel"><span><Plant size={27} /></span><h2>{title}</h2><p>{description}</p><button className="button-primary" onClick={onAction}>{action}<ArrowRight size={16} /></button></section>;
 }
 
-function RoleSelection({ onSelect }: { onSelect: (mode: "farmer" | "provider") => void }) {
+function RoleSelection({ onSelect, language, onLanguage }: { onSelect: (mode: "farmer" | "provider") => void; language: Language; onLanguage: (language: Language) => void }) {
   return (
     <main className="role-selection">
       <div className="role-selection-shell">
@@ -1962,6 +1946,7 @@ function RoleSelection({ onSelect }: { onSelect: (mode: "farmer" | "provider") =
           <span className="brand-mark"><Leaf size={21} weight="fill" /></span>
           <span className="brand-name">Farm<span>Shield</span></span>
           <span className="role-demo-label">Decision-support demo</span>
+          <LanguageSelect language={language} onChange={onLanguage} />
         </header>
         <section className="role-selection-intro" aria-labelledby="role-selection-title">
           <p className="eyebrow">A workspace for better farm decisions</p>
@@ -1970,8 +1955,8 @@ function RoleSelection({ onSelect }: { onSelect: (mode: "farmer" | "provider") =
         </section>
         <div className="role-card-grid">
           <button className="role-card farmer-role-card" type="button" onClick={() => onSelect("farmer")}>
-            <span className="role-card-image">
-              <img src="/farm-field.jpg" alt="" />
+            <span className="role-card-image farmer-role-image" aria-hidden="true">
+              <span className="role-card-illustration"><Farm size={58} weight="regular" /></span>
               <span className="role-card-icon"><Farm size={22} weight="regular" /></span>
             </span>
             <span className="role-card-copy">

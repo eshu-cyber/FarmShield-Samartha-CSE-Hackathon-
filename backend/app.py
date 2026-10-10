@@ -12,11 +12,11 @@ from urllib.request import Request, urlopen
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
-from backend.data_pipeline import CLEANED_PATH, REPORT_PATH
+from backend.data_pipeline import REPORT_PATH
 from backend.train_model import METRICS_PATH, MODEL_PATH
 
 logger = logging.getLogger("farmshield.api")
@@ -46,7 +46,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="FarmShield API",
-    description="Local crop recommendation and dataset transparency API.",
+    description="Local crop recommendation and aggregate dataset insights API.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -127,25 +127,21 @@ def model_metrics() -> dict:
 def data_summary() -> dict:
     if not REPORT_PATH.is_file():
         raise HTTPException(status_code=503, detail="Cleaned data summary is unavailable. Run `python -m backend.data_pipeline` first.")
-    return json.loads(REPORT_PATH.read_text(encoding="utf-8"))
-
-
-@app.get("/api/data/preview")
-def data_preview(
-    offset: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=100)] = 25,
-) -> dict:
-    if not CLEANED_PATH.is_file():
-        raise HTTPException(status_code=503, detail="Cleaned data is unavailable. Run `python -m backend.data_pipeline` first.")
-    frame = pd.read_csv(CLEANED_PATH)
-    page = frame.iloc[offset:offset + limit].astype(object)
-    records = page.where(pd.notna(page), None).to_dict(orient="records")
-    return {
-        "offset": offset,
-        "limit": limit,
-        "total": len(frame),
-        "records": records,
-    }
+    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+    public_fields = (
+        "source_file",
+        "source_provenance",
+        "original_rows",
+        "cleaned_rows",
+        "invalid_rows_excluded",
+        "duplicate_rows_excluded",
+        "feature_count",
+        "crop_categories",
+        "missing_values_after_cleaning",
+        "processed_at_utc",
+        "date_range",
+    )
+    return {field: report[field] for field in public_fields}
 
 
 @app.post("/api/predict/crop")
