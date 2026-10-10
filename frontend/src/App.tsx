@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownRight,
   ArrowRight,
@@ -74,9 +74,6 @@ function activityKey(cropName: CropKey, id: string): string {
 }
 
 type SoilForm = {
-  state: string;
-  district: string;
-  village: string;
   coordinates: string;
   nitrogen: string;
   phosphorus: string;
@@ -126,18 +123,6 @@ type CropModelMetrics = {
   evaluation: string;
 };
 
-type CalendarDemoResponse = {
-  model: string;
-  weather_source: string;
-  weather_note: string;
-  period: { start_date: string; end_date: string; days: number };
-  cumulative_gdd: number;
-  estimated_maturity_threshold_date: string | null;
-  pesticide_weather_screen: { dates: string[]; note: string };
-  irrigation: { available: boolean; reason: string };
-  dssat_simulation: boolean;
-};
-
 type DemoState = {
   view: View;
   selectedCrop: CropKey | null;
@@ -164,9 +149,6 @@ type DemoState = {
 };
 
 const defaultForm: SoilForm = {
-  state: "",
-  district: "",
-  village: "",
   coordinates: "",
   nitrogen: "",
   phosphorus: "",
@@ -183,16 +165,71 @@ const defaultForm: SoilForm = {
 };
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+const OWM_API_KEY = import.meta.env.VITE_OWM_API_KEY as string | undefined;
+
+type WeatherData = {
+  temperature: number;
+  humidity: number;
+  rainfall: number;
+  description: string;
+  latitude: number;
+  longitude: number;
+};
+
+async function fetchCurrentWeather(lat: number, lon: number): Promise<WeatherData> {
+  if (!OWM_API_KEY) throw new Error("OpenWeatherMap API key is not configured.");
+  const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OWM_API_KEY}&units=metric`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Weather fetch failed (${response.status}).`);
+  const data = await response.json() as {
+    main: { temp: number; humidity: number };
+    rain?: { "1h"?: number; "3h"?: number };
+    weather: { description: string }[];
+  };
+  return {
+    temperature: Math.round(data.main.temp * 10) / 10,
+    humidity: data.main.humidity,
+    rainfall: Math.round(((data.rain?.["1h"] ?? data.rain?.["3h"] ?? 0) * 24) * 10) / 10,
+    description: data.weather[0]?.description ?? "",
+    latitude: lat,
+    longitude: lon,
+  };
+}
 const cropDisplayNames: Record<string, string> = {
   blackgram: "Black gram",
   kidneybeans: "Kidney beans",
   mothbeans: "Moth beans",
   mungbean: "Mung bean",
-  pigeonpeas: "Pigeon pea",
+  pigeonpeas: "Pigeon peas",
+  greengram: "Green gram",
+  watermelon: "Watermelon",
+  muskmelon: "Muskmelon",
+  pomegranate: "Pomegranate",
+  chickpea: "Chickpea",
+  lentil: "Lentil",
+  banana: "Banana",
+  mango: "Mango",
+  grapes: "Grapes",
+  apple: "Apple",
+  orange: "Orange",
+  papaya: "Papaya",
+  coconut: "Coconut",
+  jute: "Jute",
+  coffee: "Coffee",
+  rice: "Rice",
+  maize: "Maize",
+  groundnut: "Groundnut",
+  cotton: "Cotton",
 };
 
 function cropDisplayName(crop: string): string {
-  return cropDisplayNames[crop] ?? crop.charAt(0).toUpperCase() + crop.slice(1);
+  return cropDisplayNames[crop.toLowerCase()] ?? crop.charAt(0).toUpperCase() + crop.slice(1);
+}
+
+// Match model prediction name (e.g. "kidneybeans") to CropInfo in data.ts
+function findCropByPrediction(predictionName: string) {
+  const normalized = predictionName.toLowerCase().replace(/[^a-z]/g, "");
+  return crops.find((c) => c.name.toLowerCase().replace(/[^a-z]/g, "") === normalized);
 }
 
 function isCropPredictionResponse(value: unknown): value is CropPredictionResponse {
@@ -209,29 +246,6 @@ function isCropPredictionResponse(value: unknown): value is CropPredictionRespon
     typeof item.class_probability === "number" &&
     Number.isFinite(item.class_probability),
   ) && "probability_note" in value && typeof value.probability_note === "string";
-}
-
-function isCalendarDemoResponse(value: unknown): value is CalendarDemoResponse {
-  if (!value || typeof value !== "object") return false;
-  return "model" in value && typeof value.model === "string" &&
-    "weather_source" in value && typeof value.weather_source === "string" &&
-    "weather_note" in value && typeof value.weather_note === "string" &&
-    "period" in value && !!value.period && typeof value.period === "object" &&
-    "start_date" in value.period && typeof value.period.start_date === "string" &&
-    "end_date" in value.period && typeof value.period.end_date === "string" &&
-    "days" in value.period && typeof value.period.days === "number" &&
-    "cumulative_gdd" in value && typeof value.cumulative_gdd === "number" &&
-    "estimated_maturity_threshold_date" in value &&
-    (typeof value.estimated_maturity_threshold_date === "string" || value.estimated_maturity_threshold_date === null) &&
-    "pesticide_weather_screen" in value && !!value.pesticide_weather_screen &&
-    typeof value.pesticide_weather_screen === "object" &&
-    "dates" in value.pesticide_weather_screen && Array.isArray(value.pesticide_weather_screen.dates) &&
-    value.pesticide_weather_screen.dates.every((date) => typeof date === "string") &&
-    "note" in value.pesticide_weather_screen && typeof value.pesticide_weather_screen.note === "string" &&
-    "irrigation" in value && !!value.irrigation && typeof value.irrigation === "object" &&
-    "available" in value.irrigation && typeof value.irrigation.available === "boolean" &&
-    "reason" in value.irrigation && typeof value.irrigation.reason === "string" &&
-    "dssat_simulation" in value && typeof value.dssat_simulation === "boolean";
 }
 
 function apiErrorDetail(value: unknown): string | null {
@@ -490,6 +504,20 @@ function App() {
         : state.view;
     document.title = `FarmShield | ${translate(title, language)}`;
   }, [dashboardMode, language, state.view]);
+  useLayoutEffect(() => {
+    if ("scrollRestoration" in window.history) {
+      window.history.scrollRestoration = "manual";
+    }
+    const scrollToTop = () => {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      pageContentRef.current?.scrollIntoView({ block: "start", behavior: "auto" });
+    };
+    scrollToTop();
+    const frame = window.requestAnimationFrame(scrollToTop);
+    return () => window.cancelAnimationFrame(frame);
+  }, [dashboardMode, state.view]);
   const [toast, setToast] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -497,18 +525,21 @@ function App() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [modelRecommendations, setModelRecommendations] = useState<CropPrediction[]>([]);
+  const [currentWeather, setCurrentWeather] = useState<WeatherData | null>(null);
   const [activityFilter, setActivityFilter] = useState("All activities");
   const [calendarMode, setCalendarMode] = useState<"Timeline" | "Calendar">("Timeline");
   const [facilityType, setFacilityType] = useState("All types");
   const [facilityMaxCost, setFacilityMaxCost] = useState(10);
-  const [facilityMaxDistance, setFacilityMaxDistance] = useState(50);
   const [facilityCondition, setFacilityCondition] = useState("All conditions");
   const [facilityMonitoring, setFacilityMonitoring] = useState("Any monitoring");
   const [facilityLocation, setFacilityLocation] = useState("");
   const [menuFacility, setMenuFacility] = useState<Facility | null>(null);
   const modalRef = useRef<HTMLElement>(null);
+  const pageContentRef = useRef<HTMLElement>(null);
   const modalTriggerRef = useRef<HTMLElement | null>(null);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
+  const notificationsPopoverRef = useRef<HTMLDivElement>(null);
+  const profilePopoverRef = useRef<HTMLDivElement>(null);
   const wasMobileNavOpen = useRef(false);
 
   useEffect(() => {
@@ -545,6 +576,21 @@ function App() {
     wasMobileNavOpen.current = mobileNavOpen;
   }, [mobileNavOpen]);
 
+  useEffect(() => {
+    if (!notificationsOpen && !profileOpen) return;
+    const closeWhenOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (notificationsPopoverRef.current && !notificationsPopoverRef.current.contains(target)) {
+        setNotificationsOpen(false);
+      }
+      if (profilePopoverRef.current && !profilePopoverRef.current.contains(target)) {
+        setProfileOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeWhenOutside);
+    return () => document.removeEventListener("pointerdown", closeWhenOutside);
+  }, [notificationsOpen, profileOpen]);
+
   const crop = useMemo(
     () => crops.find((item) => item.name === state.selectedCrop) ?? null,
     [state.selectedCrop],
@@ -568,7 +614,6 @@ function App() {
   const saleableQuantity = state.quantity * (1 - state.storageLoss / 100);
   const storeNet = storeEstimate.netReturn;
   const storeDelta = storeNet - sellNet;
-  const selectedDistrict = state.soilForm.district.trim().toLowerCase();
   const filteredFacilities = useMemo(
     () => state.facilities.filter((item) =>
       (!crop || item.crops.includes(crop.name)) &&
@@ -579,10 +624,9 @@ function App() {
       (facilityCondition === "All conditions" || item.condition === facilityCondition) &&
       (facilityMonitoring === "Any monitoring" ||
         (facilityMonitoring === "Monitoring configured" ? item.devices.length > 0 : item.devices.length === 0)) &&
-      (!facilityLocation.trim() || `${item.locality} ${item.sampleDistrict} ${item.state}`.toLowerCase().includes(facilityLocation.trim().toLowerCase())) &&
-      (selectedDistrict !== item.sampleDistrict.toLowerCase() || item.distance <= facilityMaxDistance),
+      (!facilityLocation.trim() || `${item.locality} ${item.sampleDistrict} ${item.state}`.toLowerCase().includes(facilityLocation.trim().toLowerCase())),
     ),
-    [state.facilities, crop, facilityType, facilityMaxCost, facilityMaxDistance, facilityCondition, facilityMonitoring, facilityLocation, selectedDistrict],
+    [state.facilities, crop, facilityType, facilityMaxCost, facilityCondition, facilityMonitoring, facilityLocation],
   );
 
   const update = (values: Partial<DemoState>) => setState((previous) => ({ ...previous, ...values }));
@@ -623,10 +667,6 @@ function App() {
     const form = state.soilForm;
     const area = Number(form.area);
     const ph = Number(form.ph);
-    if (!form.state.trim() || !form.district.trim()) {
-      update({ analysisError: "Enter a state and district to continue." });
-      return;
-    }
     if (form.area && (!Number.isFinite(area) || area <= 0)) {
       update({ analysisError: "Farm area must be greater than zero." });
       return;
@@ -635,6 +675,45 @@ function App() {
       update({ analysisError: "Soil pH must be between 0 and 14." });
       return;
     }
+    if (loadingAnalysis) return;
+    setModelRecommendations([]);
+    setCurrentWeather(null);
+    update({ analysisError: "", analyzed: false });
+    setLoadingAnalysis(true);
+
+    // Fetch live weather from coordinates if available, then use those values for the model
+    let resolvedForm = { ...form };
+    const coordParts = form.coordinates.split(",").map((p) => p.trim());
+    const coordLat = Number(coordParts[0]);
+    const coordLon = Number(coordParts[1]);
+    if (
+      form.coordinates &&
+      Number.isFinite(coordLat) && coordLat >= -90 && coordLat <= 90 &&
+      Number.isFinite(coordLon) && coordLon >= -180 && coordLon <= 180
+    ) {
+      try {
+        const weather = await fetchCurrentWeather(coordLat, coordLon);
+        setCurrentWeather(weather);
+        resolvedForm = {
+          ...resolvedForm,
+          temperature: String(weather.temperature),
+          humidity: String(weather.humidity),
+          rainfall: String(weather.rainfall),
+        };
+        setState((previous) => ({
+          ...previous,
+          soilForm: {
+            ...previous.soilForm,
+            temperature: String(weather.temperature),
+            humidity: String(weather.humidity),
+            rainfall: String(weather.rainfall),
+          },
+        }));
+      } catch {
+        // Weather fetch failed — continue with manually entered values
+      }
+    }
+
     const numericFields: { field: keyof SoilForm; label: string; min: number; max: number }[] = [
       { field: "nitrogen", label: "Nitrogen", min: 0, max: 500 },
       { field: "phosphorus", label: "Phosphorus", min: 0, max: 500 },
@@ -645,33 +724,31 @@ function App() {
       { field: "rainfall", label: "Typical rainfall", min: 0, max: 10000 },
     ];
     for (const entry of numericFields) {
-      const rawValue = form[entry.field];
+      const rawValue = resolvedForm[entry.field];
       if (!rawValue.trim()) {
         update({ analysisError: `Enter ${entry.label.toLowerCase()} to run the crop model.` });
+        setLoadingAnalysis(false);
         return;
       }
       const value = Number(rawValue);
       if (!Number.isFinite(value) || value < entry.min || value > entry.max) {
         update({ analysisError: `${entry.label} must be between ${entry.min} and ${entry.max}.` });
+        setLoadingAnalysis(false);
         return;
       }
     }
-    if (loadingAnalysis) return;
-    setModelRecommendations([]);
-    update({ analysisError: "", analyzed: false });
-    setLoadingAnalysis(true);
     try {
       const response = await fetch(`${API_BASE_URL}/predict/crop`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          N: Number(form.nitrogen),
-          P: Number(form.phosphorus),
-          K: Number(form.potassium),
-          ph: Number(form.ph),
-          temperature: Number(form.temperature),
-          humidity: Number(form.humidity),
-          rainfall: Number(form.rainfall),
+          N: Number(resolvedForm.nitrogen),
+          P: Number(resolvedForm.phosphorus),
+          K: Number(resolvedForm.potassium),
+          ph: Number(resolvedForm.ph),
+          temperature: Number(resolvedForm.temperature),
+          humidity: Number(resolvedForm.humidity),
+          rainfall: Number(resolvedForm.rainfall),
         }),
       });
       const payload: unknown = await response.json();
@@ -705,22 +782,72 @@ function App() {
   }
 
   function requestLocation() {
-    if (!("geolocation" in navigator)) {
-      setToast("Location access is unavailable here. Enter your location manually.");
+    if (!OWM_API_KEY) {
+      setToast("No weather API key configured — enter temperature, humidity, and rainfall manually.");
       return;
     }
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        updateForm("coordinates", `${position.coords.latitude.toFixed(5)}, ${position.coords.longitude.toFixed(5)}`);
-        setToast("Device coordinates added. State and district still need manual entry.");
-      },
-      () => setToast("Location was not available. You can enter your location manually."),
-      { enableHighAccuracy: false, timeout: 9000, maximumAge: 60000 },
-    );
+    setToast("Fetching weather for your location…");
+    fetch("https://ipapi.co/json/")
+      .then((res) => {
+        if (!res.ok) throw new Error(`IP geolocation failed (${res.status})`);
+        return res.json();
+      })
+      .then((geo: { latitude: number; longitude: number; city: string; error?: boolean }) => {
+        if (geo.error || !geo.latitude) throw new Error("IP geolocation failed");
+        const lat = geo.latitude;
+        const lon = geo.longitude;
+        const city = geo.city ?? "your location";
+        return fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OWM_API_KEY}&units=metric`)
+          .then((res) => {
+            if (!res.ok) throw new Error(`OWM ${res.status}`);
+            return res.json();
+          })
+          .then((data: { main: { temp: number; humidity: number }; rain?: { "1h"?: number; "3h"?: number }; weather: { description: string }[] }) => {
+            const temperature = Math.round(data.main.temp * 10) / 10;
+            const humidity = data.main.humidity;
+            const rainfall = Math.round(((data.rain?.["1h"] ?? data.rain?.["3h"] ?? 0) * 24) * 10) / 10;
+            const description = data.weather[0]?.description ?? "";
+            const coordString = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+            setCurrentWeather({ temperature, humidity, rainfall, description, latitude: lat, longitude: lon });
+            setModelRecommendations([]);
+            setState((previous) => ({
+              ...previous,
+              analyzed: false,
+              analysisError: "",
+              soilForm: {
+                ...previous.soilForm,
+                coordinates: coordString,
+                temperature: String(temperature),
+                humidity: String(humidity),
+                rainfall: String(rainfall),
+              },
+            }));
+            setToast(`Live weather for ${city}: ${temperature}°C, ${humidity}% humidity, ${rainfall} mm rainfall. Fields auto-filled.`);
+          });
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("requestLocation error:", err);
+        setToast(`Weather fetch failed: ${msg}`);
+      });
   }
 
   function toggleComplete(key: string) {
     const exists = state.completed.includes(key);
+    if (!exists && crop) {
+      // Find the activity being marked
+      const [, taskId] = key.split(":");
+      const task = activitiesForCrop.find((a) => a.id === taskId);
+      if (task) {
+        const hasIncompleteBefore = activitiesForCrop.some(
+          (a) => a.day < task.day && !state.completed.includes(activityKey(crop.name, a.id)),
+        );
+        if (hasIncompleteBefore) {
+          setToast("Complete earlier activities first.");
+          return;
+        }
+      }
+    }
     update({ completed: exists ? state.completed.filter((item) => item !== key) : [...state.completed, key] });
     setToast(exists ? "Activity marked as upcoming." : "Activity marked complete.");
   }
@@ -807,6 +934,7 @@ function App() {
             loading={loadingAnalysis}
             error={state.analysisError}
             options={modelRecommendations}
+            currentWeather={currentWeather}
             onField={updateForm}
             onAnalyze={analyzeSoil}
             onClear={() => {
@@ -819,9 +947,6 @@ function App() {
               update({
                 soilForm: {
                   ...defaultForm,
-                  state: "Andhra Pradesh",
-                  district: "Guntur",
-                  village: "Tenali",
                   nitrogen: "90",
                   phosphorus: "42",
                   potassium: "43",
@@ -851,6 +976,8 @@ function App() {
             crop={crop}
             activities={activitiesForCrop}
             initialCoordinates={state.soilForm.coordinates}
+            weatherData={currentWeather}
+            soilForm={state.soilForm}
             sowingDate={state.sowingDate}
             daysSince={daysSinceSowing}
             daysToSowing={Math.max(0, -rawDaysSinceSowing)}
@@ -908,8 +1035,6 @@ function App() {
             facilities={filteredFacilities}
             type={facilityType}
             maxCost={facilityMaxCost}
-            maxDistance={facilityMaxDistance}
-            location={state.soilForm.district}
             locationFilter={facilityLocation}
             condition={facilityCondition}
             monitoring={facilityMonitoring}
@@ -917,7 +1042,6 @@ function App() {
             reserved={state.reserved}
             onType={setFacilityType}
             onCost={setFacilityMaxCost}
-            onDistance={setFacilityMaxDistance}
             onLocationFilter={setFacilityLocation}
             onCondition={setFacilityCondition}
             onMonitoring={setFacilityMonitoring}
@@ -952,8 +1076,10 @@ function App() {
             sowingDate={state.sowingDate}
             cropActivities={activitiesForCrop}
             completed={state.completed}
+            facilities={state.facilities}
             onNavigate={navigate}
             onComplete={toggleComplete}
+            onDetails={openFacilityDetails}
           />
         );
     }
@@ -1015,12 +1141,6 @@ function App() {
         </nav>
         {!sidebarCollapsed && (
           <div className="sidebar-bottom">
-            <div className="help-card">
-              <div className="help-icon">{dashboardMode === "farmer" ? <GlobeHemisphereWest size={18} /> : <Warehouse size={18} />}</div>
-              <strong>{dashboardMode === "farmer" ? "Built for your farm" : "Facility workspace demo"}</strong>
-              <p>{dashboardMode === "farmer" ? "Review sample plans with a local agriculture advisor." : "Manage shared facility listings and simulated devices."}</p>
-              {dashboardMode === "farmer" && <button onClick={() => navigate("Settings")}>About this demo <ArrowRight size={14} /></button>}
-            </div>
             {dashboardMode === "farmer" ? (
               <button className="profile-mini" onClick={() => navigate("My farm")}>
                 <div className="avatar">RK</div>
@@ -1049,9 +1169,8 @@ function App() {
             <div className="breadcrumb"><span>{dashboardMode === "farmer" ? "Farm workspace" : "Storage workspace"}</span><CaretRight size={14} /><strong>{dashboardMode === "farmer" ? state.view : "Facilities"}</strong></div>
           </div>
           <div className="topbar-actions">
-            {dashboardMode === "farmer" && <button className="location-chip" onClick={() => navigate("Soil & crop recommendations")} aria-label={`${translate("Update location. Current district:", language)} ${translate(state.soilForm.district || "not set", language)}`}><MapPin size={15} /><span>{state.soilForm.district || "Set location"}</span><CaretDown size={13} /></button>}
             <LanguageSelect language={language} onChange={changeLanguage} />
-            {dashboardMode === "farmer" && <div className="popover-anchor">
+            {dashboardMode === "farmer" && <div className="popover-anchor" ref={notificationsPopoverRef}>
               <button className="icon-button notification-button" onClick={() => { setNotificationsOpen((value) => !value); setProfileOpen(false); }} aria-label="Notifications" aria-expanded={notificationsOpen}>
                 <Bell size={19} />{!state.notificationRead && <span className="notification-indicator" />}
               </button>
@@ -1063,13 +1182,13 @@ function App() {
                 </div>
               )}
             </div>}
-            {dashboardMode === "farmer" && <div className="popover-anchor">
+            {dashboardMode === "farmer" && <div className="popover-anchor" ref={profilePopoverRef}>
               <button className="top-avatar" onClick={() => { setProfileOpen((value) => !value); setNotificationsOpen(false); }} aria-label="Farmer profile menu" aria-expanded={profileOpen}>RK</button>
               {profileOpen && <div className="popover profile-popover"><div className="profile-popover-head"><span className="avatar">RK</span><span><strong>Ramesh Kumar</strong><small>Demo farmer</small></span></div><button onClick={() => navigate("My farm")}>My farm details</button><button onClick={() => navigate("Settings")}>Settings</button><button className="danger-link" onClick={resetDemo}>Reset demo data</button></div>}
             </div>}
           </div>
         </header>
-        <main className="page-content">
+        <main className="page-content" ref={pageContentRef}>
           <div className="page-heading">
             <div>
               <p className="eyebrow">{dashboardMode === "provider" ? "STORAGE PROVIDER WORKSPACE" : state.view === "Overview" ? "YOUR FARM AT A GLANCE" : "FARMSHIELD WORKSPACE"}</p>
@@ -1129,10 +1248,10 @@ function App() {
               }
             }}
           >
-            <div className="modal-heading"><div><span className="modal-icon"><Warehouse size={21} /></span><SampleTag>{menuFacility.providerManaged ? "Provider demo" : "Seed sample"}</SampleTag></div><button className="icon-button" onClick={() => setMenuFacility(null)} aria-label="Close facility details"><X size={19} /></button></div>
+            <div className="modal-heading"><div><span className="modal-icon"><Warehouse size={21} /></span><SampleTag>Provider entry</SampleTag></div><button className="icon-button" onClick={() => setMenuFacility(null)} aria-label="Close facility details"><X size={19} /></button></div>
             <h2 id="facility-title">{menuFacility.name}</h2>
             <p id="facility-description">{menuFacility.description}</p>
-            <div className="detail-grid"><div><small>Location</small><strong>{menuFacility.address ? `${menuFacility.address}, ` : ""}{menuFacility.locality}, {menuFacility.sampleDistrict}, {menuFacility.state}, {menuFacility.country}</strong></div><div><small>Storage type</small><strong>{menuFacility.type}</strong></div><div><small>Condition / provider reported</small><strong>{menuFacility.condition}</strong></div><div><small>Availability</small><strong>{menuFacility.availability}</strong></div><div><small>Available capacity</small><strong>{Math.max(0, menuFacility.capacity - menuFacility.occupiedCapacity)} / {menuFacility.capacity} {menuFacility.capacityUnit}</strong></div><div><small>Sample daily price</small><strong>{formatStorageRate(menuFacility.dailyPrice)} / {menuFacility.pricingUnit}</strong></div><div><small>Minimum storage duration</small><strong>{translate(`${menuFacility.minimumDays} days`, language)}</strong></div><div><small>Handling and loading fees</small><strong>{formatRupees(menuFacility.handlingFee + menuFacility.loadingFee)}</strong></div><div><small>Cleanliness</small><strong>{menuFacility.cleanliness}</strong></div><div><small>Ventilation</small><strong>{menuFacility.ventilation}</strong></div><div><small>Moisture protection</small><strong>{menuFacility.moistureProtection}</strong></div><div><small>Pest-control status</small><strong>{menuFacility.pestControl}</strong></div><div><small>Last inspection date</small><strong>{menuFacility.inspectionDate ? dateLabel(menuFacility.inspectionDate) : "Not entered"}</strong></div><div><small>Maintenance notes</small><strong>{menuFacility.maintenanceNotes || "None entered"}</strong></div></div>
+            <div className="detail-grid"><div><small>Location</small><strong>{menuFacility.address ? `${menuFacility.address}, ` : ""}{menuFacility.locality}, {menuFacility.sampleDistrict}, {menuFacility.state}, {menuFacility.country}</strong></div><div><small>Storage type</small><strong>{menuFacility.type}</strong></div><div><small>Condition / provider reported</small><strong>{menuFacility.condition}</strong></div><div><small>Availability</small><strong>{menuFacility.availability}</strong></div><div><small>Available capacity</small><strong>{Math.max(0, menuFacility.capacity - menuFacility.occupiedCapacity)} / {menuFacility.capacity} {menuFacility.capacityUnit}</strong></div><div><small>Daily price</small><strong>{formatStorageRate(menuFacility.dailyPrice)} / {menuFacility.pricingUnit}</strong></div><div><small>Minimum storage duration</small><strong>{translate(`${menuFacility.minimumDays} days`, language)}</strong></div><div><small>Handling and loading fees</small><strong>{formatRupees(menuFacility.handlingFee + menuFacility.loadingFee)}</strong></div><div><small>Cleanliness</small><strong>{menuFacility.cleanliness}</strong></div><div><small>Ventilation</small><strong>{menuFacility.ventilation}</strong></div><div><small>Moisture protection</small><strong>{menuFacility.moistureProtection}</strong></div><div><small>Pest-control status</small><strong>{menuFacility.pestControl}</strong></div><div><small>Last inspection date</small><strong>{menuFacility.inspectionDate ? dateLabel(menuFacility.inspectionDate) : "Not entered"}</strong></div><div><small>Maintenance notes</small><strong>{menuFacility.maintenanceNotes || "None entered"}</strong></div></div>
             <div className="facility-fit"><strong>Suitable crops</strong><div>{menuFacility.crops.map((item) => <span key={item}>{item}</span>)}</div></div>
             <div className="facility-fit"><strong>Environmental monitoring</strong><div>{menuFacility.devices.length ? menuFacility.devices.map((device) => <span key={device.id}>{device.name} ({device.type}): {device.status}, {device.enabled ? "enabled" : "disabled"}{device.temperature !== null ? `, ${device.temperature} °C` : ""}{device.humidity !== null ? `, ${device.humidity}% RH` : ""}. {device.updatedAt}</span>) : <span>No simulated devices configured</span>}</div><small>Simulated IoT Data - No Live Device Connected</small></div>
             {state.reserved && state.selectedFacility === menuFacility.id && <div className="inline-success"><CheckCircle size={18} />Demo confirmation saved. This is not a real reservation.</div>}
@@ -1158,6 +1277,48 @@ function pageDescription(view: View): string {
   return text[view];
 }
 
+function NearbyStoragePanel({ facilities, onNavigate, onDetails }: { facilities: Facility[]; onNavigate: (view: View) => void; onDetails: (facility: Facility) => void }) {
+  const top = useMemo(() => {
+    return [...facilities]
+      .filter((f) => f.availability !== "Unavailable" && f.capacity > f.occupiedCapacity)
+      .sort((a, b) => {
+        const priceA = a.pricingUnit === "per kilogram per day" ? a.dailyPrice * 1000 : a.dailyPrice;
+        const priceB = b.pricingUnit === "per kilogram per day" ? b.dailyPrice * 1000 : b.dailyPrice;
+        return priceA - priceB;
+      })
+      .slice(0, 3);
+  }, [facilities]);
+
+  return (
+    <section className="panel nearby-storage-panel">
+      <div className="section-title-row">
+        <div><h3>Nearby &amp; low cost storage</h3><p>Available facilities sorted by daily rate</p></div>
+        <button className="text-link" onClick={() => onNavigate("Storage locations")}>View all <ArrowRight size={14} /></button>
+      </div>
+      {top.length === 0 ? (
+        <EmptyInline message="No available storage facilities yet. Providers can add listings from the Provider Portal." action="Browse storage" onAction={() => onNavigate("Storage locations")} />
+      ) : (
+        <div className="nearby-storage-list">
+          {top.map((facility) => (
+            <button key={facility.id} className="nearby-storage-item" onClick={() => { onNavigate("Storage locations"); onDetails(facility); }}>
+              <span className="nearby-storage-icon"><Warehouse size={17} /></span>
+              <span className="nearby-storage-info">
+                <strong>{facility.name}</strong>
+                <small>{facility.locality}, {facility.sampleDistrict}</small>
+              </span>
+              <span className="nearby-storage-price">
+                <strong>{formatStorageRate(facility.dailyPrice)}</strong>
+                <small>/{facility.pricingUnit.replace("per ", "").replace(" per day", "/day")}</small>
+              </span>
+              <ArrowRight size={14} className="nearby-storage-arrow" />
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function OverviewPage({
   crop,
   area,
@@ -1167,8 +1328,10 @@ function OverviewPage({
   sowingDate,
   cropActivities: taskList,
   completed,
+  facilities,
   onNavigate,
   onComplete,
+  onDetails,
 }: {
   crop: CropInfo | null;
   area: string;
@@ -1178,8 +1341,10 @@ function OverviewPage({
   sowingDate: string;
   cropActivities: Activity[];
   completed: string[];
+  facilities: Facility[];
   onNavigate: (view: View) => void;
   onComplete: (id: string) => void;
+  onDetails: (facility: Facility) => void;
 }) {
   const nextTask = taskList.find((item) => !completed.includes(activityKey(crop?.name ?? "Rice", item.id)));
   const progress = crop ? Math.min(100, Math.round((Math.max(0, crop.days - remainingDays) / crop.days) * 100)) : 0;
@@ -1245,6 +1410,7 @@ function OverviewPage({
           <button className="text-link" onClick={() => onNavigate("Harvest & market prices")}>Compare markets <ArrowRight size={14} /></button>
         </section>
       </div>
+      <NearbyStoragePanel facilities={facilities} onNavigate={onNavigate} onDetails={onDetails} />
     </>
   );
 }
@@ -1268,6 +1434,7 @@ function SoilPage({
   onSample,
   onLocation,
   options,
+  currentWeather,
   onSelect,
   onRemove,
   selectedCrop,
@@ -1282,6 +1449,7 @@ function SoilPage({
   onSample: () => void;
   onLocation: () => void;
   options: CropPrediction[];
+  currentWeather: WeatherData | null;
   onSelect: (crop: CropInfo) => void;
   onRemove: () => void;
   selectedCrop: CropKey | null;
@@ -1292,16 +1460,16 @@ function SoilPage({
       <section className="panel soil-panel">
         <div className="section-title-row"><div><h3>Soil & farm information</h3><p>Enter all seven model measurements. Confirm soil-test units locally.</p></div><div className="section-icon"><TestTube size={20} /></div></div>
         <form onSubmit={onAnalyze}>
-          <div className="form-section-heading"><span>Location</span><small>Used to contextualize sample options</small></div>
-          <div className="form-grid three">
-            <Field label="State *"><select value={form.state} onChange={(event) => onField("state", event.target.value)}><option value="">Select a state</option><option>Andhra Pradesh</option><option>Telangana</option><option>Karnataka</option><option>Maharashtra</option><option>Tamil Nadu</option></select></Field>
-            <Field label="District *"><input value={form.district} onChange={(event) => onField("district", event.target.value)} placeholder="For example, Guntur" /></Field>
-            <Field label="Village or town"><input value={form.village} onChange={(event) => onField("village", event.target.value)} placeholder="Enter village or town" /></Field>
-          </div>
-          <div className="location-tools">
-            <Field label="Farm coordinates (optional)" hint="Coordinates are only filled after you request device location."><input value={form.coordinates} onChange={(event) => onField("coordinates", event.target.value)} placeholder="Add manually, if known" /></Field>
-            <button type="button" className="button-secondary location-button" onClick={onLocation}><Compass size={17} />Use device location</button>
-          </div>
+          <section className="location-access-card" aria-label="Device location access">
+            <div><Compass size={19} /><span><strong>Use your device location</strong><small>Optional. Fetches live weather (temperature, humidity, rainfall) from OpenWeatherMap to pre-fill the model inputs and pass to the crop calendar. Location is not saved.</small></span></div>
+            <button type="button" className="button-secondary location-button" onClick={onLocation}><MapPin size={17} />{form.coordinates ? "Update device location" : "Allow location access"}</button>
+          </section>
+          {currentWeather && (
+            <div className="weather-prefill-notice">
+              <CloudSun size={16} />
+              <span><strong>Live weather applied</strong> — {currentWeather.description}, {currentWeather.temperature}°C, {currentWeather.humidity}% humidity, {currentWeather.rainfall} mm rainfall. These values are pre-filled below and passed to the crop calendar.</span>
+            </div>
+          )}
           <div className="form-section-heading"><span>Soil measurements</span><small>Use values from a recent soil test where available</small></div>
           <div className="form-grid four">
             <Field label="Nitrogen (N) *" hint="Dataset units are undocumented"><input inputMode="decimal" value={form.nitrogen} onChange={(event) => onField("nitrogen", event.target.value)} placeholder="Required" /></Field>
@@ -1328,7 +1496,7 @@ function SoilPage({
         <section className="results-section">
           <div className="results-head"><div><p className="eyebrow">MODEL 1 OUTPUT</p><h2>Ranked crop candidates</h2><p>Model class probabilities are not calibrated confidence or verified suitability.</p></div><SampleTag>Trained model</SampleTag></div>
           {options.length ? <div className="recommendation-grid">{options.map((prediction) => {
-            const item = crops.find((candidate) => candidate.name.toLowerCase() === prediction.crop.toLowerCase());
+            const item = findCropByPrediction(prediction.crop);
             return (
             <article className={`crop-card${item && selectedCrop === item.name ? " crop-selected" : ""}`} key={prediction.crop}>
               <div className="crop-photo">{item ? <img src={item.image} alt={`Sample field image used with the ${item.name} option`} loading="lazy" /> : <span className="crop-unknown-icon"><Plant size={28} /></span>}</div>
@@ -1346,7 +1514,7 @@ function SoilPage({
           );})}</div> : <EmptyInline message="The crop model returned no candidates." action="Clear the form" onAction={onRemove} />}
           <div className="comparison-panel">
             <div><span className="section-icon"><Rows size={19} /></span><div><h3>Model response</h3><p>The ranked categories come from the trained classifier; they do not account for the unmodeled field details above.</p></div></div>
-            <div className="comparison-table-wrap"><table><thead><tr><th>Crop category</th><th>Class probability</th><th>Local calendar</th></tr></thead><tbody>{options.map((prediction) => <tr key={prediction.crop}><td><strong>{cropDisplayName(prediction.crop)}</strong></td><td><span className="score-label">{(prediction.class_probability * 100).toFixed(1)}%</span></td><td>{crops.some((item) => item.name.toLowerCase() === prediction.crop.toLowerCase()) ? "Demo profile available" : "Not configured"}</td></tr>)}</tbody></table></div>
+            <div className="comparison-table-wrap"><table><thead><tr><th>Crop category</th><th>Class probability</th><th>Local calendar</th></tr></thead><tbody>{options.map((prediction) => <tr key={prediction.crop}><td><strong>{cropDisplayName(prediction.crop)}</strong></td><td><span className="score-label">{(prediction.class_probability * 100).toFixed(1)}%</span></td><td>{findCropByPrediction(prediction.crop) ? "Demo profile available" : "Not configured"}</td></tr>)}</tbody></table></div>
           </div>
         </section>
       )}
@@ -1433,6 +1601,8 @@ function CalendarPage({
   crop,
   activities: taskList,
   initialCoordinates,
+  weatherData,
+  soilForm,
   sowingDate,
   daysToSowing,
   daysSince,
@@ -1450,6 +1620,8 @@ function CalendarPage({
   crop: CropInfo;
   activities: Activity[];
   initialCoordinates: string;
+  weatherData: WeatherData | null;
+  soilForm: SoilForm;
   sowingDate: string;
   daysToSowing: number;
   daysSince: number;
@@ -1464,58 +1636,60 @@ function CalendarPage({
   onComplete: (id: string) => void;
   onGoMarket: () => void;
 }) {
-  const previousYear = new Date().getFullYear() - 1;
   const defaultCoordinates = initialCoordinates.split(",").map((part) => part.trim());
-  const [latitude, setLatitude] = useState(defaultCoordinates[0] ?? "");
-  const [longitude, setLongitude] = useState(defaultCoordinates[1] ?? "");
-  const [weatherStartDate, setWeatherStartDate] = useState(`${previousYear}-05-01`);
-  const [weatherEndDate, setWeatherEndDate] = useState(`${previousYear}-08-31`);
-  const [weatherLoading, setWeatherLoading] = useState(false);
-  const [weatherError, setWeatherError] = useState("");
-  const [weatherResult, setWeatherResult] = useState<CalendarDemoResponse | null>(null);
-  const archiveCutoff = new Date();
-  archiveCutoff.setDate(archiveCutoff.getDate() - 5);
-  const latestArchiveDate = localDateString(archiveCutoff);
 
-  async function runCalendarDemo() {
-    const lat = Number(latitude);
-    const lon = Number(longitude);
-    if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lon) || lon < -180 || lon > 180) {
-      setWeatherError("Enter a valid latitude (-90 to 90) and longitude (-180 to 180).");
-      return;
-    }
-    if (!weatherStartDate || !weatherEndDate || weatherEndDate <= weatherStartDate) {
-      setWeatherError("Choose a valid historical date range with the end date after the start date.");
-      return;
-    }
-    setWeatherLoading(true);
-    setWeatherError("");
-    setWeatherResult(null);
-    try {
-      const response = await fetch(`${API_BASE_URL}/predict/calendar`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          latitude: lat,
-          longitude: lon,
-          start_date: weatherStartDate,
-          end_date: weatherEndDate,
-        }),
+  type AdvisoryDay = {
+    date: string;
+    day_of_season: number;
+    season_progress_pct: number;
+    temperature_max: number;
+    temperature_min: number;
+    rainfall_mm: number;
+    humidity_pct: number;
+    cumulative_gdd: number;
+    irrigation_advice: string;
+    fertilizer_advice: string[];
+    harvest_note: string | null;
+  };
+  const [advisory, setAdvisory] = useState<AdvisoryDay[]>([]);
+  const [advisoryLoading, setAdvisoryLoading] = useState(false);
+  const [advisoryError, setAdvisoryError] = useState("");
+
+  const lat = weatherData ? weatherData.latitude : Number(defaultCoordinates[0]);
+  const lon = weatherData ? weatherData.longitude : Number(defaultCoordinates[1]);
+
+  const hasCoords = Number.isFinite(lat) && lat >= -90 && lat <= 90 && Number.isFinite(lon) && lon >= -180 && lon <= 180;
+
+  useEffect(() => {
+    if (!hasCoords) return;
+    setAdvisoryLoading(true);
+    setAdvisoryError("");
+    fetch(`${API_BASE_URL}/predict/advisory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        latitude: lat,
+        longitude: lon,
+        sowing_date: sowingDate,
+        crop_days: crop.days,
+        nitrogen: Number(soilForm.nitrogen) || 0,
+        phosphorus: Number(soilForm.phosphorus) || 0,
+        potassium: Number(soilForm.potassium) || 0,
+        ph: Number(soilForm.ph) || 7,
+        irrigation: soilForm.irrigation,
+      }),
+    })
+      .then((res) => res.json())
+      .then((data: { daily: AdvisoryDay[] }) => {
+        setAdvisory(data.daily ?? []);
+        setAdvisoryLoading(false);
+      })
+      .catch(() => {
+        setAdvisoryError("Could not load farm advisory. Check backend is running.");
+        setAdvisoryLoading(false);
       });
-      const payload: unknown = await response.json();
-      if (!response.ok) {
-        throw new Error(apiErrorDetail(payload) ?? `Calendar request failed (${response.status}).`);
-      }
-      if (!isCalendarDemoResponse(payload)) {
-        throw new Error("The calendar service returned an unexpected response.");
-      }
-      setWeatherResult(payload);
-    } catch (error) {
-      setWeatherError(error instanceof Error ? error.message : "Could not retrieve the historical weather calendar.");
-    } finally {
-      setWeatherLoading(false);
-    }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lat, lon, sowingDate, crop.days]);
 
   const tasks = taskList.filter((task) => {
     const done = completed.includes(activityKey(crop.name, task.id));
@@ -1535,44 +1709,57 @@ function CalendarPage({
   };
   return (
     <div className="content-stack">
-      <div className="callout safety-callout"><span><Warning size={19} /></span><p><strong>Your notebook's GDD example is connected below; DSSAT is not.</strong> It analyzes historical weather only. Its pesticide weather screen is not a treatment recommendation, and it does not calculate irrigation. The activity plan below remains a day-count demo.</p></div>
-      <section className="panel soil-panel calendar-model-panel">
-        <div className="section-title-row"><div><h3>Model 2 · Historical GDD calendar demo</h3><p>Runs your notebook's defaults (10°C base temperature and 1,200 GDD threshold) on historical weather. These thresholds are not calibrated to {crop.name} or its variety.</p></div><SampleTag>Not DSSAT</SampleTag></div>
-        <div className="form-grid four">
-          <div className="field"><label htmlFor="calendar-latitude">Latitude</label><input id="calendar-latitude" type="number" min="-90" max="90" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} placeholder="e.g. 16.3" /></div>
-          <div className="field"><label htmlFor="calendar-longitude">Longitude</label><input id="calendar-longitude" type="number" min="-180" max="180" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} placeholder="e.g. 80.4" /></div>
-          <div className="field"><label htmlFor="calendar-weather-start">Historical season start</label><input id="calendar-weather-start" type="date" max={latestArchiveDate} value={weatherStartDate} onChange={(event) => setWeatherStartDate(event.target.value)} /></div>
-          <div className="field"><label htmlFor="calendar-weather-end">Historical season end</label><input id="calendar-weather-end" type="date" max={latestArchiveDate} value={weatherEndDate} onChange={(event) => setWeatherEndDate(event.target.value)} /></div>
-        </div>
-        <div className="form-actions">
-          <small className="field-hint">On request, coordinates and dates are sent to Open-Meteo for historical weather. Use a past season; this is not a forecast.</small>
-          <button type="button" className="button-primary" onClick={runCalendarDemo} disabled={weatherLoading}>{weatherLoading ? "Loading weather…" : "Run historical calendar"}</button>
-        </div>
-        {weatherError && <p className="form-error" role="alert"><Warning size={14} />{weatherError}</p>}
-        {weatherResult && <div className="calendar-model-result" aria-live="polite">
-          <div className="model-metrics-note">
-            <strong>Historical model output</strong>
-            <span>{weatherResult.period.days} weather days · {weatherResult.period.start_date} to {weatherResult.period.end_date}</span>
-            <span>{weatherResult.cumulative_gdd.toLocaleString()} cumulative GDD</span>
-            <span>Threshold date: {weatherResult.estimated_maturity_threshold_date ?? "not reached in this period"}</span>
-            <small>{weatherResult.weather_source}. {weatherResult.weather_note} This is an illustrative GDD threshold, not a validated harvest prediction.</small>
-          </div>
-          <div className="callout safety-callout"><span><Warning size={17} /></span><p><strong>Pesticide screen only — do not spray from this output.</strong> {weatherResult.pesticide_weather_screen.dates.length} dates met the notebook's weather heuristics. {weatherResult.pesticide_weather_screen.note}</p></div>
-          <p className="data-insights-status"><strong>Irrigation:</strong> Not calculated. {weatherResult.irrigation.reason} <strong>DSSAT:</strong> {weatherResult.dssat_simulation ? "connected" : "not connected"}.</p>
-          {weatherResult.pesticide_weather_screen.dates.length > 0 && <p className="data-insights-status"><strong>Screened dates:</strong> {weatherResult.pesticide_weather_screen.dates.slice(0, 8).join(", ")}{weatherResult.pesticide_weather_screen.dates.length > 8 ? " …" : ""}</p>}
-        </div>}
-      </section>
+
       <section className="panel crop-season-banner">
         <div className="crop-season-photo"><img src={crop.image} alt={`Sample field image used with the ${crop.name} calendar`} /></div>
         <div className="crop-season-info">
           <div className="crop-season-heading"><div><span className="muted-kicker">SELECTED DEMO CROP</span><h2>{crop.name}</h2><p>{crop.variety}</p></div><SampleTag>Rule-based estimate</SampleTag></div>
+          <div className="sowing-date-banner">
+            <CalendarBlank size={16} />
+            <label htmlFor="sowing-date-banner">Sowing date</label>
+            <input id="sowing-date-banner" type="date" value={sowingDate} onChange={(event) => onSowing(event.target.value)} />
+            <span className="sowing-harvest-arrow">→</span>
+            <span className="sowing-harvest-label">Harvest around <strong>{dateLabel(addDays(sowingDate, crop.days))}</strong></span>
+          </div>
           <div className="crop-season-stats"><div><small>Current stage</small><strong>{currentStage}</strong></div><div><small>{daysToSowing ? "Sowing starts in" : "Days since sowing"}</small><strong>{daysToSowing ? `${daysToSowing} days` : `${daysSince} days`}</strong></div><div><small>Approximate time to harvest</small><strong>{remainingDays + daysToSowing} days</strong></div></div>
           <div className="season-bar"><span style={{ width: `${Math.max(progress, 2)}%` }} /></div>
           <div className="season-bar-label"><span>{progress}% sample season progress</span><span>Approx. {crop.days} day cycle</span></div>
         </div>
       </section>
+      {!hasCoords && (
+        <div className="callout demo-callout"><span><MapPin size={19} /></span><p><strong>No location set.</strong> Go to Soil &amp; crop recommendations and click "Allow location access" to enable automatic daily weather advisory for this farm.</p></div>
+      )}
+      {hasCoords && (
+        <section className="panel">
+          <div className="section-title-row">
+            <div><h3>Daily farm advisory — next {advisory.length} days</h3><p>Live forecast from Open-Meteo · irrigation, fertilizer &amp; harvest guidance based on your soil data</p></div>
+            {advisoryLoading && <span className="data-insights-status">Loading…</span>}
+          </div>
+          {advisoryError && <div className="form-error" role="alert"><Warning size={16} />{advisoryError}</div>}
+          {advisory.length > 0 && (
+            <div className="advisory-table-wrap">
+              <table className="advisory-table">
+                <thead><tr><th>Date</th><th>Day</th><th>Temp (°C)</th><th>Rain (mm)</th><th>Humidity (%)</th><th>Irrigation</th><th>Fertilizer</th><th>Harvest</th></tr></thead>
+                <tbody>
+                  {advisory.map((day) => (
+                    <tr key={day.date} className={day.harvest_note ? "advisory-row-harvest" : day.fertilizer_advice[0] !== "No fertilizer action needed today." ? "advisory-row-fertilizer" : ""}>
+                      <td><strong>{day.date}</strong></td>
+                      <td>{day.day_of_season}</td>
+                      <td>{day.temperature_min}–{day.temperature_max}</td>
+                      <td>{day.rainfall_mm}</td>
+                      <td>{day.humidity_pct}</td>
+                      <td>{day.irrigation_advice}</td>
+                      <td>{day.fertilizer_advice.join(" ")}</td>
+                      <td>{day.harvest_note ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
       <section className="panel calendar-toolbar">
-        <div className="sowing-date-control"><CalendarBlank size={18} /><div><label htmlFor="sowing-date">Sowing date</label><input id="sowing-date" type="date" value={sowingDate} onChange={(event) => onSowing(event.target.value)} /></div></div>
         <div className="calendar-controls">
           <label className="compact-select"><span>Show</span><select value={filter} onChange={(event) => onFilter(event.target.value)}><option>All activities</option><option>Upcoming</option><option>Due soon</option><option>Completed</option></select></label>
           <div className="segmented-control" role="group" aria-label="Calendar display"><button className={mode === "Timeline" ? "selected" : ""} onClick={() => onMode("Timeline")}><ListChecks size={15} />Timeline</button><button className={mode === "Calendar" ? "selected" : ""} onClick={() => onMode("Calendar")}><CalendarBlank size={15} />Calendar</button></div>
@@ -1599,16 +1786,17 @@ function CalendarPage({
               })}
             </div>
           ) : (
-            <div className="calendar-list">
-              {tasks.map((task) => {
-                const key = activityKey(crop.name, task.id);
-                return <article key={task.id} className="calendar-day"><div className="calendar-day-date"><strong>{dateLabel(addDays(sowingDate, task.day), { day: "numeric" })}</strong><span>{dateLabel(addDays(sowingDate, task.day), { month: "short", year: "numeric" })}</span></div><div className="calendar-day-content"><div><strong>{task.title}</strong><small>{task.stage} · {statusOf(task)}</small><p>{task.description}</p></div><button className="icon-button" onClick={() => onComplete(key)} aria-label={completed.includes(key) ? "Mark activity incomplete" : "Mark activity complete"}>{completed.includes(key) ? <CheckCircle size={19} weight="fill" /> : <Circle size={19} />}</button></div></article>;
-              })}
-            </div>
+            <MonthCalendar
+              crop={crop}
+              activities={taskList}
+              sowingDate={sowingDate}
+              completed={completed}
+              onComplete={onComplete}
+            />
           )}
         </section>
         <aside className="calendar-aside">
-          <section className="panel stage-panel"><div className="section-title-row"><div><h3>Growth stages</h3><p>Illustrative milestones</p></div></div><div className="stage-list">{crop.stages.map((stage, index) => <div className={`stage-row${daysSince >= stage.day ? " stage-passed" : ""}`} key={`${stage.name}-${stage.day}`}><span className="stage-mark">{daysSince >= stage.day ? <Check size={11} weight="bold" /> : index + 1}</span><span>{stage.name}</span><small>Day {stage.day}</small></div>)}</div></section>
+          <section className="panel stage-panel"><div className="section-title-row"><div><h3>Growth stages</h3><p>Dates from your sowing date</p></div></div><div className="stage-list">{crop.stages.map((stage, index) => <div className={`stage-row${daysSince >= stage.day ? " stage-passed" : ""}`} key={`${stage.name}-${stage.day}`}><span className="stage-mark">{daysSince >= stage.day ? <Check size={11} weight="bold" /> : index + 1}</span><span>{stage.name}</span><small>{dateLabel(addDays(sowingDate, stage.day), { day: "numeric", month: "short" })}</small></div>)}</div></section>
           <section className="sample-weather"><span className="weather-icon"><CloudSun size={20} /></span><div><span className="muted-kicker">SAMPLE WEATHER ALERT</span><strong>Rainfall check suggested</strong><p>Illustrative reminder only. Review a trusted local forecast.</p></div></section>
           <button className="button-primary full-button" onClick={onGoMarket}>Continue to harvest planning <ArrowRight size={16} /></button>
         </aside>
@@ -1748,8 +1936,6 @@ function StoragePage({
   facilities: entries,
   type,
   maxCost,
-  maxDistance,
-  location,
   locationFilter,
   condition,
   monitoring,
@@ -1757,7 +1943,6 @@ function StoragePage({
   reserved,
   onType,
   onCost,
-  onDistance,
   onLocationFilter,
   onCondition,
   onMonitoring,
@@ -1769,8 +1954,6 @@ function StoragePage({
   facilities: Facility[];
   type: string;
   maxCost: number;
-  maxDistance: number;
-  location: string;
   locationFilter: string;
   condition: string;
   monitoring: string;
@@ -1778,7 +1961,6 @@ function StoragePage({
   reserved: boolean;
   onType: (type: string) => void;
   onCost: (cost: number) => void;
-  onDistance: (distance: number) => void;
   onLocationFilter: (location: string) => void;
   onCondition: (condition: string) => void;
   onMonitoring: (monitoring: string) => void;
@@ -1786,6 +1968,24 @@ function StoragePage({
   onDetails: (facility: Facility) => void;
   onSelect: (facility: Facility) => void;
 }) {
+  const [locationGranted, setLocationGranted] = useState(false);
+  const [locationLoading, setLocationLoading] = useState(false);
+
+  function requestStorageLocation() {
+    if (!("geolocation" in navigator)) return;
+    setLocationLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const label = `${position.coords.latitude.toFixed(3)}, ${position.coords.longitude.toFixed(3)}`;
+        onLocationFilter(label);
+        setLocationGranted(true);
+        setLocationLoading(false);
+      },
+      () => setLocationLoading(false),
+      { enableHighAccuracy: false, timeout: 9000, maximumAge: 60000 },
+    );
+  }
+
   const [costFacilityId, setCostFacilityId] = useState<string | null>(null);
   const [storedQuantity, setStoredQuantity] = useState(5);
   const [storedUnit, setStoredUnit] = useState<"tonnes" | "kilograms">("tonnes");
@@ -1802,33 +2002,37 @@ function StoragePage({
   }
   return (
     <div className="content-stack">
-      <div className="callout demo-callout"><span><Warehouse size={19} /></span><p><strong>Example facilities only.</strong> Names, locations, distances, capacity, fees, and contacts are fictional demo records. No inventory or booking is verified. {location.trim().toLowerCase() === "guntur" ? "The example distances apply only to the sample Guntur profile." : location ? `No sample distance is available for ${location}.` : "Enter a district to check whether a matching sample distance is available."}</p></div>
-      <div className="storage-heading-row"><div><h2>{crop ? `Storage examples for ${crop.name}` : "Explore storage examples"}</h2><p>Filter sample listings and inspect illustrative facility details.</p></div><button className="button-primary" onClick={onProviderPortal}>Storage Provider Portal <ArrowRight size={15} /></button></div>
+      <div className="callout demo-callout"><span><Warehouse size={19} /></span><p><strong>Storage listings.</strong> Facilities shown here are added locally by storage providers. Availability, capacity, fees, and condition are provider-entered; confirm details before making plans.</p></div>
+      <section className="location-access-card" aria-label="Device location access for storage">
+        <div><MapPin size={19} /><span><strong>Find storage near you</strong><small>Optional. Uses your device location to filter storage facilities by area. Location is not saved.</small></span></div>
+        <button type="button" className="button-secondary location-button" onClick={requestStorageLocation} disabled={locationLoading}>
+          <Compass size={17} />{locationLoading ? "Locating…" : locationGranted ? "Update location" : "Use my location"}
+        </button>
+      </section>
+      <div className="storage-heading-row"><div><h2>{crop ? `Storage for ${crop.name}` : "Storage locations"}</h2><p>Browse provider-entered facilities and check their details.</p></div><button className="button-primary" onClick={onProviderPortal}>Storage Provider Portal <ArrowRight size={15} /></button></div>
       {selectedFacility && reserved && <div className="inline-success storage-confirmation" role="status"><CheckCircle size={18} />Demo selection saved for {entries.find((facility) => facility.id === selectedFacility)?.name ?? "the selected facility"}. No reservation was made.</div>}
       <div className="storage-layout">
         <aside className="panel storage-filters">
-          <div className="section-title-row"><div><h3>Filters</h3><p>Adjust sample results</p></div><span className="section-icon"><Rows size={18} /></span></div>
-          <Field label="Facility name or location"><input value={locationFilter} onChange={(event) => onLocationFilter(event.target.value)} placeholder="Search sample listings" /></Field>
+          <div className="section-title-row"><div><h3>Filters</h3><p>Filter available facilities</p></div><span className="section-icon"><Rows size={18} /></span></div>
+          <Field label="Facility name or location"><input value={locationFilter} onChange={(event) => onLocationFilter(event.target.value)} placeholder="Search facilities" /></Field>
           <Field label="Storage type"><select value={type} onChange={(event) => onType(event.target.value)}><option>All types</option><option>Warehouse</option><option>Grain storage</option><option>Cold storage</option></select></Field>
           <Field label="Facility condition"><select value={condition} onChange={(event) => onCondition(event.target.value)}><option>All conditions</option><option>Excellent</option><option>Good</option><option>Needs Maintenance</option><option>Critical</option></select></Field>
           <Field label="Monitoring devices"><select value={monitoring} onChange={(event) => onMonitoring(event.target.value)}><option>Any monitoring</option><option>Monitoring configured</option><option>No monitoring configured</option></select></Field>
           <Field label={`Max sample daily rate: ${formatRupees(maxCost)} per tonne equivalent`} hint="Compared for one tonne over one day. A facility daily rate is used as entered."><input type="range" min="0" max="100" step="1" value={maxCost * 10} onChange={(event) => onCost(Number(event.target.value) / 10)} /><span className="range-values"><small>₹0</small><small>₹10</small></span></Field>
-          <Field label={`Maximum example distance: ${maxDistance} km`} hint={location.trim().toLowerCase() === "guntur" ? "Distance examples are only shown for the Guntur demo location." : "Distance filtering is unavailable until a matching demo district is entered."}><input type="range" min="5" max="50" step="1" value={maxDistance} disabled={location.trim().toLowerCase() !== "guntur"} onChange={(event) => onDistance(Number(event.target.value))} /><span className="range-values"><small>5 km</small><small>50 km</small></span></Field>
-          <div className="filter-crop-note"><Leaf size={16} /><span>{crop ? `Showing sample sites compatible with ${crop.name}.` : "Select a crop to filter by crop compatibility."}</span></div>
-          <button className="button-quiet" onClick={() => { onLocationFilter(""); onType("All types"); onCost(10); onDistance(50); onCondition("All conditions"); onMonitoring("Any monitoring"); }}>Reset filters</button>
+          <div className="filter-crop-note"><Leaf size={16} /><span>{crop ? `Showing sites compatible with ${crop.name}.` : "Select a crop to filter by crop compatibility."}</span></div>
+          <button className="button-quiet" onClick={() => { onLocationFilter(""); onType("All types"); onCost(10); onCondition("All conditions"); onMonitoring("Any monitoring"); }}>Reset filters</button>
         </aside>
         <section className="storage-results">
-          <div className="storage-results-head"><span>{translate(`${entries.length} sample facilities`, getLanguage())}</span><span>{location.trim().toLowerCase() === "guntur" ? "Example distances for Guntur" : "Sample-list order, no matching distances"}</span></div>
+          <div className="storage-results-head"><span>{translate(`${entries.length} facilities`, getLanguage())}</span><span>Provider-entered listings</span></div>
           {entries.length ? entries.map((facility) => (
             <article className="panel facility-row" key={facility.id}>
               <div className="facility-symbol"><Warehouse size={22} /></div>
-              <div className="facility-main"><div className="facility-name-row"><h3>{facility.name}</h3><SampleTag>{facility.providerManaged ? "Provider demo" : "Seed sample"}</SampleTag></div><p>{facility.type} <span /> {facility.locality}, {facility.sampleDistrict}</p><div className="facility-tags">{facility.crops.map((item) => <span key={item}>{item}</span>)}</div><div className="facility-tags"><span className={`provider-status condition-${facility.condition.toLowerCase().replaceAll(" ", "-")}`}>{facility.condition} / provider-reported</span><span className={`provider-status availability-${facility.availability.toLowerCase().replaceAll(" ", "-")}`}>{facility.availability}</span><span>{facility.devices.some((device) => device.enabled && device.temperature !== null) ? "Temperature monitoring sample" : "No temperature monitor"}</span><span>{facility.devices.some((device) => device.enabled && device.humidity !== null) ? "Humidity monitoring sample" : "No humidity monitor"}</span></div></div>
-              <div className="facility-stat"><small>Illustrative distance</small><strong>{facility.distance > 0 && location.trim().toLowerCase() === facility.sampleDistrict.toLowerCase() ? `${facility.distance} km` : "Not available"}</strong></div>
+              <div className="facility-main"><div className="facility-name-row"><h3>{facility.name}</h3><SampleTag>Provider entry</SampleTag></div><p>{facility.type} <span /> {facility.locality}, {facility.sampleDistrict}</p><div className="facility-tags">{facility.crops.map((item) => <span key={item}>{item}</span>)}</div><div className="facility-tags"><span className={`provider-status condition-${facility.condition.toLowerCase().replaceAll(" ", "-")}`}>{facility.condition} / provider-reported</span><span className={`provider-status availability-${facility.availability.toLowerCase().replaceAll(" ", "-")}`}>{facility.availability}</span><span>{facility.devices.some((device) => device.enabled && device.temperature !== null) ? "Temperature monitoring configured" : "No temperature monitor"}</span><span>{facility.devices.some((device) => device.enabled && device.humidity !== null) ? "Humidity monitoring configured" : "No humidity monitor"}</span></div></div>
               <div className="facility-stat"><small>Available capacity</small><strong>{Math.max(0, facility.capacity - facility.occupiedCapacity)} / {facility.capacity} {facility.capacityUnit}</strong></div>
-              <div className="facility-stat"><small>Sample daily price</small><strong>{formatStorageRate(facility.dailyPrice)}<small> / {facility.pricingUnit}</small></strong></div>
+              <div className="facility-stat"><small>Daily price</small><strong>{formatStorageRate(facility.dailyPrice)}<small> / {facility.pricingUnit}</small></strong></div>
               <div className="facility-actions"><button className="button-quiet" onClick={() => onDetails(facility)}>View details</button><button className="button-secondary" onClick={() => { setCostFacilityId(costFacilityId === facility.id ? null : facility.id); setStorageDays(Math.max(facility.minimumDays, storageDays)); }} aria-expanded={costFacilityId === facility.id}>Calculate storage cost</button><button className="button-primary" disabled={facility.availability === "Unavailable" || facility.capacity <= facility.occupiedCapacity} onClick={() => onSelect(facility)}>{facility.availability === "Unavailable" || facility.capacity <= facility.occupiedCapacity ? "Unavailable" : selectedFacility === facility.id && reserved ? "Demo selected" : "Select facility"}<ArrowRight size={15} /></button></div>
               {costFacilityId === facility.id && <div className="farmer-cost-calculator">
-                <strong>Sample storage cost</strong>
+                <strong>Storage cost</strong>
                 <div>
                   <label>Quantity<input type="number" min="0" step="0.1" value={storedQuantity} onChange={(event) => setStoredQuantity(Math.max(0, Number(event.target.value)))} /></label>
                   <label>Unit<select value={storedUnit} onChange={(event) => setStoredUnit(event.target.value as typeof storedUnit)}><option value="tonnes">Tonnes</option><option value="kilograms">Kilograms</option></select></label>
@@ -1839,8 +2043,8 @@ function StoragePage({
                 <small>Illustrative calculation only. No booking or payment is made.</small>
               </div>}
             </article>
-          )) : <section className="panel storage-empty"><span><Warehouse size={25} /></span><h3>No examples match those filters</h3><p>Try a different fee range or storage type. Filters do not check real inventory.</p><button className="button-secondary" onClick={() => { onType("All types"); onCost(100); onDistance(50); }}>Clear filters</button></section>}
-          <div className="storage-contact-note"><MapPin size={16} /><span>All facility records, prices, conditions, readings, and distances are demo data. Unavailable facilities cannot be selected.</span></div>
+          )) : <section className="panel storage-empty"><span><Warehouse size={25} /></span><h3>No storage facilities available yet</h3><p>Storage providers can add their facilities from the Provider Portal.</p><button className="button-secondary" onClick={onProviderPortal}>Open Provider Portal</button></section>}
+          <div className="storage-contact-note"><MapPin size={16} /><span>Facility details are provider-entered. Verify availability, pricing, and condition before selecting a facility.</span></div>
         </section>
       </div>
     </div>
@@ -1865,7 +2069,7 @@ function FarmPage({
   function downloadSummary() {
     const summary = [
       "FarmShield demo farm summary",
-      `Location: ${[form.village, form.district, form.state].filter(Boolean).join(", ") || "Not set"}`,
+      `Device location access: ${form.coordinates ? "Granted for this session" : "Not granted"}`,
       `Farm area: ${area ? `${area} ${unit}` : "Not set"}`,
       `Selected crop: ${crop?.name ?? "Not selected"}`,
       "",
@@ -1879,13 +2083,12 @@ function FarmPage({
     URL.revokeObjectURL(url);
   }
   const rows = [
-    ["Location", [form.village, form.district, form.state].filter(Boolean).join(", ") || "Not entered"],
+    ["Device location", form.coordinates ? "Granted for this session" : "Not granted"],
     ["Farm area", area ? `${area} ${unit}` : "Not entered"],
     ["Selected crop", crop?.name ?? "Not selected"],
     ["Soil type", form.soil || "Not entered"],
     ["Water availability", form.water || "Not entered"],
     ["Irrigation", form.irrigation || "Not entered"],
-    ["Coordinates", form.coordinates || "Not provided"],
   ];
   return (
     <div className="content-stack">
@@ -1982,6 +2185,122 @@ function RoleSelection({ onSelect, language, onLanguage }: { onSelect: (mode: "f
         <p className="role-selection-footnote">Demo facility records are stored in this browser and shared between both workspaces. No sign-in or permission checks are implemented.</p>
       </div>
     </main>
+  );
+}
+
+function MonthCalendar({
+  crop,
+  activities: taskList,
+  sowingDate,
+  completed,
+  onComplete,
+}: {
+  crop: CropInfo;
+  activities: Activity[];
+  sowingDate: string;
+  completed: string[];
+  onComplete: (key: string) => void;
+}) {
+  const [viewDate, setViewDate] = useState(() => {
+    const [y, m] = sowingDate.split("-").map(Number);
+    return { year: y, month: m };
+  });
+
+  // Stage colour bands: map each day of the season to a stage index
+  const stageColors = [
+    "#e8f5e9", "#c8e6c9", "#a5d6a7", "#81c784", "#66bb6a", "#4caf50",
+  ];
+  const harvestColor = "#fff9c4";
+
+  function stageForDay(dayOffset: number): number {
+    if (dayOffset < 0 || dayOffset > crop.days) return -1;
+    let idx = 0;
+    for (let i = 0; i < crop.stages.length; i++) {
+      if (dayOffset >= crop.stages[i].day) idx = i;
+    }
+    return idx;
+  }
+
+  function activitiesOnDate(isoDate: string) {
+    return taskList.filter((t) => addDays(sowingDate, t.day) === isoDate);
+  }
+
+  const { year, month } = viewDate;
+  const firstDay = new Date(Date.UTC(year, month - 1, 1)).getUTCDay(); // 0=Sun
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const monthLabel = new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString(getIntlLocale(), { month: "long", year: "numeric", timeZone: "UTC" });
+
+  function prevMonth() {
+    setViewDate(({ year: y, month: m }) => m === 1 ? { year: y - 1, month: 12 } : { year: y, month: m - 1 });
+  }
+  function nextMonth() {
+    setViewDate(({ year: y, month: m }) => m === 12 ? { year: y + 1, month: 1 } : { year: y, month: m + 1 });
+  }
+
+  const cells: (number | null)[] = [
+    ...Array(firstDay).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+  // pad to full weeks
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  return (
+    <div className="month-calendar">
+      <div className="month-calendar-nav">
+        <button className="icon-button" onClick={prevMonth} aria-label="Previous month"><CaretLeft size={16} /></button>
+        <strong>{monthLabel}</strong>
+        <button className="icon-button" onClick={nextMonth} aria-label="Next month"><CaretRight size={16} /></button>
+      </div>
+      <div className="month-calendar-legend">
+        {crop.stages.map((s, i) => (
+          <span key={s.name} style={{ background: stageColors[i] ?? stageColors[stageColors.length - 1] }}>{s.name}</span>
+        ))}
+        <span style={{ background: harvestColor }}>Harvest</span>
+      </div>
+      <div className="month-calendar-grid">
+        {dayNames.map((d) => <div key={d} className="month-cal-header">{d}</div>)}
+        {cells.map((day, idx) => {
+          if (!day) return <div key={`empty-${idx}`} className="month-cal-cell empty" />;
+          const isoDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          const [sowY, sowM, sowD] = sowingDate.split("-").map(Number);
+          const sowUTC = Date.UTC(sowY, sowM - 1, sowD);
+          const cellUTC = Date.UTC(year, month - 1, day);
+          const dayOffset = Math.round((cellUTC - sowUTC) / 86400000);
+          const stageIdx = stageForDay(dayOffset);
+          const isHarvest = dayOffset === crop.days;
+          const bg = isHarvest ? harvestColor : stageIdx >= 0 ? (stageColors[stageIdx] ?? stageColors[stageColors.length - 1]) : undefined;
+          const dayActivities = activitiesOnDate(isoDate);
+          const today = localDateString();
+          return (
+            <div
+              key={isoDate}
+              className={`month-cal-cell${isoDate === today ? " month-cal-today" : ""}${dayActivities.length ? " month-cal-has-activity" : ""}`}
+              style={bg ? { background: bg } : undefined}
+            >
+              <span className="month-cal-day-num">{day}</span>
+              {dayActivities.map((task) => {
+                const key = activityKey(crop.name, task.id);
+                const done = completed.includes(key);
+                return (
+                  <button
+                    key={task.id}
+                    className={`month-cal-activity${done ? " done" : ""}`}
+                    onClick={() => onComplete(key)}
+                    title={task.title}
+                    aria-label={`${task.title} — ${done ? "Mark activity incomplete" : "Mark activity complete"}`}
+                  >
+                    {done ? <Check size={9} weight="bold" /> : null}
+                    <span>{task.title}</span>
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

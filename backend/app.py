@@ -90,6 +90,18 @@ class CalendarPredictionRequest(BaseModel):
         return self
 
 
+class FarmAdvisoryRequest(BaseModel):
+    latitude: Annotated[float, Field(ge=-90, le=90)]
+    longitude: Annotated[float, Field(ge=-180, le=180)]
+    sowing_date: date
+    crop_days: Annotated[int, Field(ge=1, le=365)]
+    nitrogen: Annotated[float, Field(ge=0, le=500)] = 0
+    phosphorus: Annotated[float, Field(ge=0, le=500)] = 0
+    potassium: Annotated[float, Field(ge=0, le=500)] = 0
+    ph: Annotated[float, Field(ge=0, le=14)] = 7.0
+    irrigation: str = ""
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -200,13 +212,7 @@ def predict_calendar(request: CalendarPredictionRequest) -> dict:
     if not isinstance(daily, dict) or not daily.get("time"):
         raise HTTPException(status_code=502, detail="Historical weather provider returned no daily weather for these dates.")
 
-    required_columns = (
-        "time",
-        "temperature_2m_max",
-        "temperature_2m_min",
-        "precipitation_sum",
-        "relative_humidity_2m_mean",
-    )
+    required_columns = ("time", "temperature_2m_max", "temperature_2m_min", "precipitation_sum", "relative_humidity_2m_mean")
     if any(column not in daily for column in required_columns):
         raise HTTPException(status_code=502, detail="Historical weather provider returned an incomplete daily record.")
     row_count = len(daily["time"])
@@ -223,17 +229,11 @@ def predict_calendar(request: CalendarPredictionRequest) -> dict:
         humidity = daily["relative_humidity_2m_mean"][index]
         if any(value is None for value in (tmax, tmin, rainfall, humidity)):
             raise HTTPException(status_code=502, detail="Historical weather provider returned missing daily measurements.")
-
         average_temperature = (float(tmax) + float(tmin)) / 2
         cumulative_gdd += max(average_temperature - request.t_base, 0)
         if harvest_date is None and cumulative_gdd >= request.maturity_gdd_target:
             harvest_date = weather_date
-        if (
-            400 <= cumulative_gdd <= 800
-            and average_temperature > 20
-            and float(humidity) > 80
-            and float(rainfall) < 2
-        ):
+        if (400 <= cumulative_gdd <= 800 and average_temperature > 20 and float(humidity) > 80 and float(rainfall) < 2):
             spray_screen_dates.append(weather_date)
 
     return {
@@ -241,24 +241,116 @@ def predict_calendar(request: CalendarPredictionRequest) -> dict:
         "weather_source": "Open-Meteo Historical Weather API",
         "weather_note": "Historical gridded weather, not measurements from a farm sensor or a forecast.",
         "location": {"latitude": request.latitude, "longitude": request.longitude},
-        "period": {
-            "start_date": daily["time"][0],
-            "end_date": daily["time"][-1],
-            "days": row_count,
-        },
-        "parameters": {
-            "t_base": request.t_base,
-            "maturity_gdd_target": request.maturity_gdd_target,
-        },
+        "period": {"start_date": daily["time"][0], "end_date": daily["time"][-1], "days": row_count},
+        "parameters": {"t_base": request.t_base, "maturity_gdd_target": request.maturity_gdd_target},
         "cumulative_gdd": round(cumulative_gdd, 1),
         "estimated_maturity_threshold_date": harvest_date,
-        "pesticide_weather_screen": {
-            "dates": spray_screen_dates,
-            "note": "Notebook heuristic only; not a pesticide recommendation. It has no pest observations, product label, or crop-specific validation.",
-        },
-        "irrigation": {
-            "available": False,
-            "reason": "The supplied notebook does not calculate irrigation demand or soil water balance.",
-        },
+        "pesticide_weather_screen": {"dates": spray_screen_dates, "note": "Notebook heuristic only; not a pesticide recommendation."},
+        "irrigation": {"available": False, "reason": "The supplied notebook does not calculate irrigation demand or soil water balance."},
         "dssat_simulation": False,
+    }
+
+
+@app.post("/api/predict/advisory")
+def predict_advisory(request: FarmAdvisoryRequest) -> dict:
+    """Fetch 16-day forecast from Open-Meteo and return daily irrigation/fertilizer/harvest advice."""
+    forecast_days = min(request.crop_days, 16)
+    params = urlencode({
+        "latitude": request.latitude,
+        "longitude": request.longitude,
+        "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,relative_humidity_2m_mean,et0_fao_evapotranspiration",
+        "forecast_days": forecast_days,
+        "timezone": "auto",
+    })
+    weather_request = Request(
+        f"https://api.open-meteo.com/v1/forecast?{params}",
+        headers={"User-Agent": "FarmShield/1.0"},
+    )
+    try:
+        with urlopen(weather_request, timeout=15) as response:
+            weather = json.loads(response.read())
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=502, detail="Weather forecast temporarily unavailable.") from error
+
+    daily = weather.get("daily", {})
+    times = daily.get("time", [])
+    if not times:
+        raise HTTPException(status_code=502, detail="No forecast data returned.")
+
+    today = date.today()
+    days_since_sowing = (today - request.sowing_date).days
+    crop_days = request.crop_days
+    low_n = request.nitrogen < 40
+    low_p = request.phosphorus < 20
+    low_k = request.potassium < 20
+    rain_fed = "rain" in request.irrigation.lower() or request.irrigation == ""
+
+    daily_advice = []
+    cumulative_gdd = 0.0
+    for i, day_str in enumerate(times):
+        tmax = daily["temperature_2m_max"][i] or 0
+        tmin = daily["temperature_2m_min"][i] or 0
+        rain = daily["precipitation_sum"][i] or 0
+        humidity = daily["relative_humidity_2m_mean"][i] or 0
+        et0 = daily.get("et0_fao_evapotranspiration", [None] * len(times))[i] or 0
+        tavg = (tmax + tmin) / 2
+        cumulative_gdd += max(tavg - 10, 0)
+        day_offset = days_since_sowing + i
+        pct = round(min(day_offset / crop_days * 100, 100), 1) if crop_days > 0 else 0
+
+        # Irrigation advice
+        water_deficit = max(et0 - rain, 0)
+        if rain >= 5:
+            irrigation = "No irrigation needed — sufficient rainfall."
+        elif rain_fed:
+            irrigation = "Rain-fed only — monitor soil moisture."
+        elif water_deficit > 4:
+            irrigation = f"Irrigate today — estimated deficit {water_deficit:.1f} mm."
+        elif water_deficit > 2:
+            irrigation = f"Light irrigation suggested — deficit {water_deficit:.1f} mm."
+        else:
+            irrigation = "Soil moisture likely adequate."
+
+        # Fertilizer advice based on growth stage and soil NPK
+        fertilizer = []
+        if day_offset < 15 and low_n:
+            fertilizer.append("Apply basal nitrogen (soil N is low).")
+        if day_offset < 15 and low_p:
+            fertilizer.append("Apply phosphorus at sowing (soil P is low).")
+        if day_offset < 15 and low_k:
+            fertilizer.append("Apply potassium at sowing (soil K is low).")
+        if 25 <= day_offset <= 35 and low_n:
+            fertilizer.append("Top-dress nitrogen at tillering stage.")
+        if 45 <= day_offset <= 55 and low_n:
+            fertilizer.append("Second nitrogen top-dress at panicle initiation.")
+        if not fertilizer:
+            fertilizer.append("No fertilizer action needed today.")
+
+        # Harvest readiness
+        harvest_note = None
+        if pct >= 90:
+            harvest_note = "Crop approaching maturity — prepare for harvest."
+        elif pct >= 100:
+            harvest_note = "Crop ready for harvest."
+
+        daily_advice.append({
+            "date": day_str,
+            "day_of_season": day_offset,
+            "season_progress_pct": pct,
+            "temperature_max": round(tmax, 1),
+            "temperature_min": round(tmin, 1),
+            "rainfall_mm": round(rain, 1),
+            "humidity_pct": round(humidity, 1),
+            "cumulative_gdd": round(cumulative_gdd, 1),
+            "irrigation_advice": irrigation,
+            "fertilizer_advice": fertilizer,
+            "harvest_note": harvest_note,
+        })
+
+    return {
+        "location": {"latitude": request.latitude, "longitude": request.longitude},
+        "sowing_date": request.sowing_date.isoformat(),
+        "crop_days": crop_days,
+        "forecast_days": len(daily_advice),
+        "daily": daily_advice,
     }
