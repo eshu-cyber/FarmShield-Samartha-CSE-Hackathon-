@@ -1139,9 +1139,9 @@ button:disabled { cursor: wait; opacity: .72; }
 }
 
 @media (max-width: 620px) {
-  .role-selection { padding: 19px 15px 26px;     .data-insights { padding: 14px; }
-    .dataset-provenance { grid-template-columns: 1fr; }
-  }
+  .role-selection { padding: 19px 15px 26px; }
+  .data-insights { padding: 14px; }
+  .dataset-provenance { grid-template-columns: 1fr; }
   .role-demo-label { font-size: 9px; }
   .role-selection-intro { margin-top: 55px; }
   .role-selection-intro h1 { letter-spacing: -1.3px; }
@@ -1178,6 +1178,29 @@ button:disabled { cursor: wait; opacity: .72; }
 .advisory-row-fertilizer td { background: #f0fdf4 !important; }
 .theme-dark .advisory-row-harvest td { background: #3b3000 !important; }
 .theme-dark .advisory-row-fertilizer td { background: #052e16 !important; }
+
+.storage-model-panel { display: grid; gap: 14px; min-width: 0; padding: 17px; }
+.storage-model-panel > .section-title-row { align-items: flex-start; margin: 0; }
+.storage-model-panel > .section-title-row > div { min-width: 0; }
+.storage-model-panel > .section-title-row p { max-width: 68ch; text-wrap: pretty; }
+.storage-model-panel > .harvest-form-grid { min-width: 0; }
+.storage-model-panel > .button-primary { justify-self: start; }
+.storage-model-panel .field { min-width: 0; }
+.storage-model-panel .field input,
+.storage-model-panel .field select { min-width: 0; }
+.storage-model-panel > .field-error { margin: 0; line-height: 1.5; text-align: left; text-wrap: pretty; }
+.storage-model-result { display: grid; gap: 8px; min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--soft); }
+.storage-model-result .decision-card-head { flex-wrap: wrap; justify-content: space-between; }
+.storage-model-result .decision-card-head .sample-tag { margin-left: 0; }
+.storage-model-result h4 { margin: 2px 0 0; color: var(--text); font: 700 18px/1.3 "Manrope", sans-serif; text-align: left; }
+.storage-model-result p,
+.storage-model-result small { display: block; max-width: 72ch; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; text-align: left; text-wrap: pretty; overflow-wrap: anywhere; }
+.storage-model-result small { padding-top: 8px; border-top: 1px solid var(--border); }
+
+@media (max-width: 430px) {
+  .storage-model-panel { padding: 14px; }
+  .storage-model-panel > .harvest-form-grid { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* Month calendar */
 .month-calendar { display: grid; gap: 10px; }

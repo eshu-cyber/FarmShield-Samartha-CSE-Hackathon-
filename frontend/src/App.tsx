@@ -69,6 +69,19 @@ const navigation: { label: View; icon: typeof House }[] = [
   { label: "Settings", icon: ClipboardText },
 ];
 
+const storageModelCrops = [
+  "Apple",
+  "Banana",
+  "Cabbage",
+  "Cauliflower",
+  "Chilli",
+  "Garlic",
+  "Okra",
+  "Onion",
+  "Potato",
+  "Tomato",
+];
+
 function activityKey(cropName: CropKey, id: string): string {
   return `${cropName}:${id}`;
 }
@@ -97,6 +110,28 @@ type CropPrediction = {
 type CropPredictionResponse = {
   recommendations: CropPrediction[];
   probability_note: string;
+};
+
+type StoragePredictionResponse = {
+  crop: string;
+  decision: "Store" | "Sell";
+  class_probability: number;
+  market: {
+    state: string;
+    district: string;
+    name: string;
+    arrival_date: string;
+    modal_price_per_quintal: number;
+    min_price_per_quintal: number;
+    max_price_per_quintal: number;
+  };
+  data_mode: "online" | "offline";
+  data_source: string;
+  offline_reason: string | null;
+  historical_training_range: { start: string; end: string };
+  target_definition: string;
+  model_evaluation: { training_rows: number; test_rows: number; accuracy: number } | null;
+  advisory_note: string;
 };
 
 type DatasetSummary = {
@@ -351,6 +386,34 @@ function loadDemoState(): DemoState {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStoragePredictionResponse(value: unknown): value is StoragePredictionResponse {
+  return isRecord(value) &&
+    typeof value.crop === "string" &&
+    (value.decision === "Store" || value.decision === "Sell") &&
+    typeof value.class_probability === "number" &&
+    isRecord(value.market) &&
+    typeof value.market.state === "string" &&
+    typeof value.market.district === "string" &&
+    typeof value.market.name === "string" &&
+    typeof value.market.arrival_date === "string" &&
+    typeof value.market.modal_price_per_quintal === "number" &&
+    typeof value.market.min_price_per_quintal === "number" &&
+    typeof value.market.max_price_per_quintal === "number" &&
+    (value.data_mode === "online" || value.data_mode === "offline") &&
+    typeof value.data_source === "string" &&
+    (typeof value.offline_reason === "string" || value.offline_reason === null) &&
+    isRecord(value.historical_training_range) &&
+    typeof value.historical_training_range.start === "string" &&
+    typeof value.historical_training_range.end === "string" &&
+    typeof value.target_definition === "string" &&
+    (value.model_evaluation === null ||
+      (isRecord(value.model_evaluation) &&
+        typeof value.model_evaluation.training_rows === "number" &&
+        typeof value.model_evaluation.test_rows === "number" &&
+        typeof value.model_evaluation.accuracy === "number")) &&
+    typeof value.advisory_note === "string";
 }
 
 function isDatasetSummary(value: unknown): value is DatasetSummary {
@@ -1855,6 +1918,56 @@ function MarketPage({
   onStore: () => void;
 }) {
   const [compareOpen, setCompareOpen] = useState(false);
+  const [storageCrop, setStorageCrop] = useState(
+    storageModelCrops.includes(crop?.name ?? "") ? crop?.name ?? "Tomato" : "Tomato",
+  );
+  const [storageState, setStorageState] = useState("");
+  const [storageDistrict, setStorageDistrict] = useState("");
+  const [storageMarket, setStorageMarket] = useState("");
+  const [storagePrediction, setStoragePrediction] = useState<StoragePredictionResponse | null>(null);
+  const [storagePredictionError, setStoragePredictionError] = useState("");
+  const [storagePredictionLoading, setStoragePredictionLoading] = useState(false);
+  const predictStoreSell = async () => {
+    setStoragePredictionLoading(true);
+    setStoragePredictionError("");
+    setStoragePrediction(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/predict/storage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          crop: storageCrop,
+          state: storageState.trim() || null,
+          district: storageDistrict.trim() || null,
+          market: storageMarket.trim() || null,
+          mode: "auto",
+        }),
+      });
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new Error("The API returned an unreadable response.");
+      }
+      if (!response.ok) {
+        const detail = isRecord(payload) && typeof payload.detail === "string" ? payload.detail : "";
+        throw new Error(detail || `Request failed with status ${response.status}.`);
+      }
+      if (!isStoragePredictionResponse(payload)) {
+        throw new Error("The API returned an unexpected storage-model response.");
+      }
+      setStoragePrediction(payload);
+    } catch (error) {
+      console.error("Could not run store-or-sell prediction.", error);
+      setStoragePredictionError(
+        error instanceof Error
+          ? error.message
+          : translate("Could not run storage prediction. Check that the backend and model are ready.", getLanguage()),
+      );
+    } finally {
+      setStoragePredictionLoading(false);
+    }
+  };
   const weeklyPrices = samplePriceHistory(basePrice);
   const chartMin = basePrice * 0.8;
   const chartMax = basePrice * 1.2;
@@ -1927,6 +2040,54 @@ function MarketPage({
           <small className="card-disclaimer">A higher assumed future price does not guarantee a better return.</small>
         </section>
       </div>
+      <section className="panel storage-model-panel">
+        <div className="section-title-row">
+          <div>
+            <h3>{translate("Storage model prediction", getLanguage())}</h3>
+            <p>{translate("Uses local historical prices offline; when configured and online, it adds current government market prices.", getLanguage())}</p>
+          </div>
+          <span className="section-icon"><Warehouse size={20} /></span>
+        </div>
+        <div className="harvest-form-grid">
+          <Field label={translate("Storage prediction crop", getLanguage())}>
+            <select value={storageCrop} onChange={(event) => setStorageCrop(event.target.value)}>
+              {storageModelCrops.map((name) => <option key={name} value={name}>{translate(name, getLanguage())}</option>)}
+            </select>
+          </Field>
+          <Field label={translate("State (optional)", getLanguage())}>
+            <input value={storageState} onChange={(event) => setStorageState(event.target.value)} placeholder={translate("For example, Andhra Pradesh", getLanguage())} />
+          </Field>
+          <Field label={translate("District (optional)", getLanguage())}>
+            <input value={storageDistrict} onChange={(event) => setStorageDistrict(event.target.value)} />
+          </Field>
+          <Field label={translate("Market (optional)", getLanguage())}>
+            <input value={storageMarket} onChange={(event) => setStorageMarket(event.target.value)} />
+          </Field>
+        </div>
+        <button className="button-primary" onClick={() => void predictStoreSell()} disabled={storagePredictionLoading}>
+          {storagePredictionLoading ? translate("Running model...", getLanguage()) : translate("Predict store or sell", getLanguage())}
+          <ArrowRight size={16} />
+        </button>
+        {storagePredictionError && <p className="field-error" role="alert">{storagePredictionError}</p>}
+        {storagePrediction && (
+          <div className="storage-model-result" aria-live="polite">
+            <div className="decision-card-head">
+              <span className="scenario-label">{translate("Model result", getLanguage())}</span>
+              <SampleTag>{translate(storagePrediction.data_mode === "online" ? "Online current + historical data" : "Offline historical data", getLanguage())}</SampleTag>
+            </div>
+            <h4>{translate(storagePrediction.decision, getLanguage())} · {translate(storagePrediction.crop, getLanguage())}</h4>
+            <p>
+              {translate("Model class score", getLanguage())}: {(storagePrediction.class_probability * 100).toFixed(1)}%
+              {" · "}{formatRupees(storagePrediction.market.modal_price_per_quintal)} {translate("per quintal", getLanguage())}
+            </p>
+            <p>{storagePrediction.market.name}, {storagePrediction.market.district}, {storagePrediction.market.state} · {translate("Price date", getLanguage())}: {dateLabel(storagePrediction.market.arrival_date)}</p>
+            <p>{translate("Training data", getLanguage())}: {dateLabel(storagePrediction.historical_training_range.start)} – {dateLabel(storagePrediction.historical_training_range.end)}</p>
+            {storagePrediction.model_evaluation && <p>{translate("Historical test accuracy", getLanguage())}: {(storagePrediction.model_evaluation.accuracy * 100).toFixed(1)}% ({storagePrediction.model_evaluation.test_rows.toLocaleString(getIntlLocale())} {translate("test records", getLanguage())})</p>}
+            {storagePrediction.offline_reason && <p role="status">{translate("Online prices unavailable; using local data.", getLanguage())} {storagePrediction.offline_reason}</p>}
+            <small>{translate("Experimental historical-pattern model only. The score is not a calibrated forecast or a guarantee; verify local prices and storage costs before deciding.", getLanguage())}</small>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

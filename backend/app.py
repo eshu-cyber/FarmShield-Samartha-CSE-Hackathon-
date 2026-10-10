@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
 from backend.data_pipeline import REPORT_PATH
+from backend.storage_model import MarketDataError, load_storage_model, predict_storage, storage_model_status
 from backend.train_model import METRICS_PATH, MODEL_PATH
 
 logger = logging.getLogger("farmshield.api")
@@ -41,12 +42,13 @@ def load_artifacts() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     load_artifacts()
+    load_storage_model()
     yield
 
 
 app = FastAPI(
     title="FarmShield API",
-    description="Local crop recommendation and aggregate dataset insights API.",
+    description="Local crop recommendations, store-or-sell predictions, and aggregate dataset insights.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -69,6 +71,20 @@ class CropPredictionRequest(BaseModel):
     humidity: Annotated[float, Field(ge=0, le=100)]
     ph: Annotated[float, Field(ge=0, le=14)]
     rainfall: Annotated[float, Field(ge=0, le=10000)]
+
+
+class StoragePredictionRequest(BaseModel):
+    crop: Annotated[str, Field(min_length=1, max_length=50)]
+    state: Annotated[str | None, Field(max_length=80)] = None
+    district: Annotated[str | None, Field(max_length=80)] = None
+    market: Annotated[str | None, Field(max_length=100)] = None
+    mode: str = "auto"
+
+    @model_validator(mode="after")
+    def validate_mode(self) -> Self:
+        if self.mode not in {"auto", "offline", "online"}:
+            raise ValueError("mode must be auto, offline, or online.")
+        return self
 
 
 class CalendarPredictionRequest(BaseModel):
@@ -122,6 +138,7 @@ def model_status() -> dict:
             "available": False,
             "reason": "No DSSAT engine, cultivar/soil files, or validated weather inputs are supplied.",
         },
+        "storage_store_sell": storage_model_status(),
     }
 
 
@@ -182,6 +199,23 @@ def predict_crop(request: CropPredictionRequest) -> dict:
         "recommendations": ranking[:5],
         "probability_note": "Class probabilities are model scores and are not calibrated guarantees of agronomic suitability.",
     }
+
+
+@app.post("/api/predict/storage")
+def predict_storage_decision(request: StoragePredictionRequest) -> dict:
+    try:
+        return predict_storage(
+            crop=request.crop.strip(),
+            state=request.state,
+            district=request.district,
+            market=request.market,
+            mode=request.mode,
+        )
+    except MarketDataError as error:
+        status_code = 503 if "not trained" in str(error).lower() else 422
+        raise HTTPException(status_code=status_code, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.post("/api/predict/calendar")
